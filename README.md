@@ -1,17 +1,47 @@
 # image_detector
 
-A new Flutter project.
+Flutter image classification app (`Vision Trend`) with local/demo prediction flow.
 
-## Getting Started
+## Development environment setup (Linux)
 
-This project is a starting point for a Flutter application.
+### 1) Install Flutter SDK
 
-A few resources to get you started if this is your first Flutter project:
+```bash
+mkdir -p "$HOME/sdk"
+cd "$HOME/sdk"
+git clone https://github.com/flutter/flutter.git -b stable
+export PATH="$HOME/sdk/flutter/bin:$PATH"
+flutter --version
+```
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+### 2) Install system dependencies for Linux desktop
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+sudo apt-get update
+sudo apt-get install -y ninja-build libgtk-3-dev g++-14 libstdc++-14-dev
+```
+
+### 3) Install project dependencies
+
+```bash
+cd /workspace
+export PATH="$HOME/sdk/flutter/bin:$PATH"
+flutter pub get
+```
+
+## Run the application
+
+### Linux desktop (recommended in this repository)
+
+```bash
+cd /workspace
+export PATH="$HOME/sdk/flutter/bin:$PATH"
+flutter run -d linux
+```
+
+The app window should open with the title `Vision Trend` and visible `Camera` and `Gallery` buttons.
+
+## Notes
+
+- `tflite_flutter` uses native FFI and does not run on the web target. Use Linux/Android/iOS targets for runtime testing.
+- If Flutter doctor reports missing Android SDK, Linux desktop can still run normally after the Linux dependencies above are installed.
