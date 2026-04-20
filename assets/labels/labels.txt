@@ -1,0 +1,5 @@
+nature_object
+urban_item
+food_object
+animal
+fashion_item
