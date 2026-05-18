@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "formula": "liters = intercept + c_area*areaNorm + c_full*fullness + c_sym*symmetryIndex",
+  "intercept": 6.9023,
+  "c_area": -8.2217,
+  "c_full": 4.62,
+  "c_sym": -0.8004,
+  "min_liters": 4.0,
+  "max_liters": 14.0,
+  "mae_liters": 1.026,
+  "samples": 74
+}

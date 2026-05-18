@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "112457221838",
+    "project_id": "buffalomilk-aada6",
+    "storage_bucket": "buffalomilk-aada6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:112457221838:android:1294fdd341e83a65df729f",
+        "android_client_info": {
+          "package_name": "com.example.image_detector"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAWMszKBT_RJ3NqKNUNiuzNEQmIKB3mLaU"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

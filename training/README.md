@@ -20,6 +20,14 @@ When prompted, paste the `admin_dataset` path shown in the app admin panel.
 
 ## 3) Train model
 
+If you have no trained model yet, bootstrap an untrained TFLite file for the app:
+
+```powershell
+python export_bootstrap_model.py
+```
+
+When you have labeled images in `training/datasets/train`, train for real accuracy:
+
 ```powershell
 python train_model.py
 ```

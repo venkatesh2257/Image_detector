@@ -1,7 +1,18 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:image/image.dart' as img;
+
+import 'inference_logger.dart';
+import '../models/dairy_pipeline_report.dart';
+import 'dairy_pipeline_builder.dart';
+import 'milk_mirror_measurement_service.dart';
+import 'rear_anatomy_detector.dart';
+import 'sex_classifier_service.dart';
+import 'milk_production_scale.dart';
+import 'tflite_classifier_service.dart';
 
 class PredictionResult {
   final String label;
@@ -9,6 +20,11 @@ class PredictionResult {
   final List<String> hashtags;
   final double estimatedLiters;
   final List<Offset> keypoints;
+  /// What produced the shown label: `tflite`, `rules_gate`, `error`, `not_loaded`.
+  final String predictionSource;
+  final InferenceDiagnostics? diagnostics;
+  final MilkMirrorUiMetrics? milkMirror;
+  final DairyPipelineReport? pipeline;
 
   PredictionResult({
     required this.label,
@@ -16,6 +32,10 @@ class PredictionResult {
     this.hashtags = const [],
     this.estimatedLiters = 0.0,
     this.keypoints = const [],
+    this.predictionSource = 'unknown',
+    this.diagnostics,
+    this.milkMirror,
+    this.pipeline,
   });
 }
 
@@ -26,6 +46,7 @@ class BuffaloAnalysisResult {
   final String animal;
   final Map<String, dynamic>? features;
   final Map<String, dynamic>? prediction;
+  final List<Offset> keypoints;
 
   BuffaloAnalysisResult({
     required this.status,
@@ -34,6 +55,7 @@ class BuffaloAnalysisResult {
     required this.animal,
     this.features,
     this.prediction,
+    this.keypoints = const [],
   });
 
   Map<String, dynamic> toJson() {
@@ -50,12 +72,66 @@ class BuffaloAnalysisResult {
 
 class ClassifierService {
   final VeterinaryBuffaloDetector _detector = VeterinaryBuffaloDetector();
-  
+  final TfliteClassifierService _tflite = TfliteClassifierService();
+  final MilkMirrorMeasurementService _milkMirror = MilkMirrorMeasurementService();
+  final DairyPipelineBuilder _pipelineBuilder = DairyPipelineBuilder();
+
+  String? _modelLoadError;
+  InferenceDiagnostics? _lastDiagnostics;
+
+  bool get isTfliteReady => _tflite.isLoaded;
+  String? get modelLoadError => _modelLoadError;
+  InferenceDiagnostics? get lastDiagnostics => _lastDiagnostics;
+
+  bool _tfliteTrained = false;
+  double _tfliteValAccuracy = 0.0;
+
+  bool get isTfliteTrained => _tfliteTrained;
+
   Future<bool> loadModel() async {
-    debugPrint('[BUFFALO DETECTOR] Clean buffalo identification system ready');
-    return true;
+    InferenceLogger.banner('APP START — MODEL INIT');
+    InferenceLogger.log('Classifier', 'loadModel() called');
+
+    await _milkMirror.ensureCalibrationLoaded();
+    final loaded = await _tflite.load();
+    _modelLoadError = loaded ? null : _tflite.loadError;
+    await _loadTrainingMetadata();
+
+    InferenceLogger.proof('TFLite model loaded', loaded, detail: _modelLoadError);
+    InferenceLogger.proof('Interpreter allocated', _tflite.interpreterAllocated);
+    if (loaded) {
+      InferenceLogger.log(
+        'Classifier',
+        'Classes (${_tflite.labels.length}): ${_tflite.labels.join(", ")}',
+      );
+      InferenceLogger.log(
+        'Classifier',
+        'Tensors in=${_tflite.inputTensorShape} out=${_tflite.outputTensorShape}',
+      );
+    }
+    InferenceLogger.banner(loaded ? 'MODEL INIT OK' : 'MODEL INIT FAILED');
+
+    return loaded;
   }
-  
+
+  Future<void> _loadTrainingMetadata() async {
+    try {
+      final raw = await rootBundle.loadString('assets/model/training_metadata.json');
+      final map = jsonDecode(raw) as Map<String, dynamic>;
+      _tfliteTrained = map['trained'] == true;
+      _tfliteValAccuracy = (map['val_accuracy'] as num?)?.toDouble() ?? 0.0;
+      if (_tfliteTrained) {
+        InferenceLogger.log(
+          'Classifier',
+          'Trained TFLite loaded (val accuracy ${(_tfliteValAccuracy * 100).toStringAsFixed(1)}%)',
+        );
+      }
+    } catch (_) {
+      _tfliteTrained = false;
+      _tfliteValAccuracy = 0.0;
+    }
+  }
+
   Future<PredictionResult> classifyImage(
     String imagePath, {
     String breed = 'Local/Desi',
@@ -64,10 +140,38 @@ class ClassifierService {
     int daysInMilk = 30,
     String feed = 'Standard',
   }) async {
-    debugPrint('[BUFFALO DETECTION] Starting clean buffalo identification...');
-    
+    final sessionId = InferenceLogger.startSession('classifyImage');
+    InferenceLogger.log('Classifier', 'image=$imagePath breed=$breed age=$age');
+
+    if (!_tflite.isLoaded) {
+      InferenceLogger.log('Classifier', 'BLOCKED — TFLite not loaded');
+      InferenceLogger.endSession('model_not_loaded');
+      _lastDiagnostics = null;
+      return PredictionResult(
+        label: 'AI Model Not Loaded',
+        confidence: 0.0,
+        hashtags: [
+          _modelLoadError ??
+              'Add assets/model/model.tflite and restart the app.',
+        ],
+        keypoints: [],
+        predictionSource: 'not_loaded',
+      );
+    }
+
+    var rulesGatePassed = false;
+    String? rulesRejectReason;
+    String predictionSource = 'unknown';
+    final gateSw = Stopwatch()..start();
+
     try {
-      final result = _detector.identifyBuffalo(
+      InferenceLogger.banner('STEP 1 — RULES GATE (not TFLite)');
+      InferenceLogger.log(
+        'RULES',
+        'VeterinaryBuffaloDetector.identifyBuffalo() — species & scene validation',
+      );
+
+      final gate = _detector.identifyBuffalo(
         imagePath,
         breed: breed,
         age: age,
@@ -75,40 +179,240 @@ class ClassifierService {
         daysInMilk: daysInMilk,
         feed: feed,
       );
-      
-      if (result.status != 'valid') {
+      final rulesGateMs = gateSw.elapsedMilliseconds;
+      rulesGatePassed = gate.status == 'valid';
+      rulesRejectReason = gate.reason;
+
+      InferenceLogger.proof('Rules gate passed', rulesGatePassed, detail: gate.reason);
+      InferenceLogger.log(
+        'RULES',
+        'status=${gate.status} confidence=${gate.confidence} animal=${gate.animal}',
+      );
+      if (gate.prediction != null) {
+        InferenceLogger.log('RULES', 'Heuristic milk hint: ${gate.prediction}');
+      }
+
+      if (rulesGatePassed && gate.features != null) {
+        final sexRefined = SexClassifierService().classifyFile(
+          imagePath,
+          udderKeypointDetected: gate.keypoints.length >= 3,
+          udderSizeHint: gate.features!['udder_size'] as String?,
+        );
+        gate.features!['sex'] = sexRefined.label;
+        gate.features!['sex_confidence'] = sexRefined.confidence;
+        gate.features!['sex_female_prob'] = sexRefined.femaleProbability;
+        gate.features!['sex_detail'] = sexRefined.detail;
+        gate.features!['sex_is_bull'] = sexRefined.isBull;
+        InferenceLogger.log(
+          'SEX',
+          'Full-res refine → ${sexRefined.label} ${(sexRefined.confidence * 100).toStringAsFixed(1)}%',
+        );
+      }
+
+      if (!rulesGatePassed) {
+        predictionSource = 'rules_gate';
+        final diag = _buildDiagnostics(
+          sessionId: sessionId,
+          rulesGatePassed: false,
+          rulesRejectReason: rulesRejectReason,
+          tfliteRan: false,
+          predictionSource: predictionSource,
+          rawLabel: '',
+          confidence: 0,
+          allScores: const {},
+          rulesGateMs: rulesGateMs,
+          tfliteInferenceMs: 0,
+        );
+        _lastDiagnostics = diag;
+        diag.printFullReport();
+        InferenceLogger.endSession('rejected_by_rules');
         return PredictionResult(
           label: 'No Buffalo Detected',
           confidence: 1.0,
-          hashtags: ['Error: ${result.reason ?? 'Unknown error'}'],
+          hashtags: [
+            'Rejected by RULES gate (TFLite did not run)',
+            gate.reason ?? 'Image did not pass buffalo checks',
+          ],
           keypoints: [],
+          predictionSource: predictionSource,
+          diagnostics: diag,
         );
       }
-      
-      // Convert to PredictionResult for UI compatibility
-      final milkLiters = result.prediction?['milk_per_day_liters']?.toDouble() ?? 0.0;
-      
-      return PredictionResult(
-        label: 'Buffalo Identified Successfully',
-        confidence: result.confidence,
-        estimatedLiters: milkLiters,
-        keypoints: [], // Can be enhanced later with actual keypoints
-        hashtags: ['Milk Yield: ${milkLiters.toStringAsFixed(1)} Liters/Day'],
+
+      InferenceLogger.banner('STEP 2 — Milk Mirror measurement (pin bones / escutcheon)');
+      final mirror = _milkMirror.measureFromImage(imagePath);
+
+      InferenceLogger.banner('STEP 3 — TFLite AI (trained band check)');
+      InferenceLogger.log('Classifier', 'Rules passed → calling TFLite classify()');
+      final ml = await _tflite.classify(imagePath);
+
+      final trustThreshold = _tfliteTrained && _tfliteValAccuracy >= 0.45 ? 0.38 : 0.45;
+      final tfliteTrusted = !ml.lowConfidence && ml.confidence >= trustThreshold;
+      final tfliteLiters = ml.expectedLiters ?? ml.litersPerDay;
+      double liters;
+      double confidence;
+      String display;
+      List<Offset> overlayKeypoints;
+
+      if (mirror.success) {
+        liters = mirror.litersPerDay;
+        confidence = mirror.confidence;
+        overlayKeypoints = mirror.keypoints;
+        predictionSource = tfliteTrusted ? 'milk_mirror+tflite' : 'milk_mirror';
+
+        if (tfliteTrusted && tfliteLiters != null) {
+          final delta = (liters - tfliteLiters).abs();
+          if (delta <= 2.0) {
+            liters = (liters * 0.62) + (tfliteLiters * 0.38);
+            confidence = math.min(0.95, confidence + ml.confidence * 0.12);
+            InferenceLogger.log(
+              'Classifier',
+              'Milk Mirror + AI agree (Δ${delta.toStringAsFixed(1)} L) → ${liters.toStringAsFixed(1)} L',
+            );
+          } else {
+            InferenceLogger.log(
+              'Classifier',
+              'Milk Mirror ${liters.toStringAsFixed(1)} L vs AI ${tfliteLiters.toStringAsFixed(1)} L '
+              '(Δ${delta.toStringAsFixed(1)} L) — escutcheon measurement kept',
+            );
+          }
+        }
+
+        InferenceLogger.log(
+          'Classifier',
+          'PRIMARY yield from Milk Mirror: ${liters.toStringAsFixed(1)} L/day',
+        );
+      } else if (tfliteTrusted && tfliteLiters != null) {
+        liters = tfliteLiters;
+        confidence = ml.confidence;
+        overlayKeypoints = gate.keypoints;
+        predictionSource = 'tflite';
+      } else {
+        liters = tfliteLiters ??
+            gate.prediction?['milk_per_day_liters']?.toDouble() ??
+            0.0;
+        confidence = math.max(ml.confidence, 0.15);
+        overlayKeypoints = gate.keypoints;
+        predictionSource = 'tflite_untrained';
+      }
+
+      liters = MilkProductionScale.clamp(liters);
+      display = MilkProductionScale.formatExact(liters);
+
+      final tags = <String>[
+        if (mirror.success) '✅ Measured: escutcheon A–B × C–D',
+        if (mirror.success)
+          'Area ${(mirror.areaNorm * 100).toStringAsFixed(0)}% · Symmetry ${((1 - mirror.symmetryIndex) * 100).toStringAsFixed(0)}%',
+        'AI estimate: ${display} (${(ml.confidence * 100).toStringAsFixed(0)}% match)',
+        'Session: $sessionId',
+        if (!mirror.success) '⚠️ ${mirror.error}',
+        if (ml.lowConfidence) '⚠️ Retake photo for a clearer rear udder view',
+      ];
+
+      final diag = _buildDiagnostics(
+        sessionId: sessionId,
+        rulesGatePassed: true,
+        rulesRejectReason: null,
+        tfliteRan: true,
+        predictionSource: predictionSource,
+        rawLabel: ml.label,
+        confidence: confidence,
+        allScores: ml.allScores,
+        rulesGateMs: rulesGateMs,
+        tfliteInferenceMs: ml.inferenceMs,
+        inputShape: ml.inputTensorShape,
+        outputShape: ml.outputTensorShape,
       );
-    } catch (e) {
-      debugPrint('[BUFFALO DETECTION] Error: $e');
+      _lastDiagnostics = diag;
+      diag.printFullReport();
+      InferenceLogger.log(
+        'Classifier',
+        'FINAL $display liters=$liters source=$predictionSource',
+      );
+      InferenceLogger.endSession('success');
+
+      final pipeline = _pipelineBuilder.build(
+        gate: gate,
+        mirror: mirror,
+        predictionSource: predictionSource,
+        displayConfidence: confidence,
+        displayLabel: display,
+        estimatedLiters: liters,
+        tfliteBand: ml.label,
+        daysInMilk: daysInMilk,
+      );
+
+      return PredictionResult(
+        label: display,
+        confidence: confidence,
+        estimatedLiters: liters,
+        keypoints: overlayKeypoints,
+        hashtags: tags,
+        predictionSource: predictionSource,
+        diagnostics: diag,
+        milkMirror: mirror.success
+            ? mirror.toUiMetrics(
+                tfliteBand: ml.label,
+                tfliteConfidence: ml.confidence,
+              )
+            : null,
+        pipeline: pipeline,
+      );
+    } catch (e, st) {
+      InferenceLogger.log('Classifier', 'EXCEPTION: $e');
+      InferenceLogger.log('Classifier', '$st');
+      InferenceLogger.endSession('error');
       return PredictionResult(
         label: 'Detection Error',
         confidence: 0.0,
-        hashtags: ['Error: ${e.toString()}'],
+        hashtags: ['Error: $e'],
         keypoints: [],
+        predictionSource: 'error',
       );
     }
+  }
+
+  InferenceDiagnostics _buildDiagnostics({
+    required String sessionId,
+    required bool rulesGatePassed,
+    required String? rulesRejectReason,
+    required bool tfliteRan,
+    required String predictionSource,
+    required String rawLabel,
+    required double confidence,
+    required Map<String, double> allScores,
+    required int rulesGateMs,
+    required int tfliteInferenceMs,
+    List<int>? inputShape,
+    List<int>? outputShape,
+  }) {
+    return InferenceDiagnostics(
+      sessionId: sessionId,
+      tfliteModelLoaded: _tflite.isLoaded,
+      tfliteInterpreterAllocated: _tflite.interpreterAllocated,
+      rulesGateRan: true,
+      rulesGatePassed: rulesGatePassed,
+      tfliteInferenceExecuted: tfliteRan,
+      predictionSource: predictionSource,
+      rulesRejectReason: rulesRejectReason,
+      tfliteModelAsset: TfliteClassifierService.modelAsset,
+      labelClasses: _tflite.labels,
+      inputTensorShape: inputShape ?? _tflite.inputTensorShape,
+      outputTensorShape: outputShape ?? _tflite.outputTensorShape,
+      rawTfliteLabel: rawLabel,
+      tfliteConfidence: confidence,
+      tfliteAllScores: allScores,
+      tfliteLoadMs: _tflite.lastLoadMs,
+      tfliteInferenceMs: tfliteInferenceMs,
+      rulesGateMs: rulesGateMs,
+      logLines: InferenceLogger.sessionLogSnapshot(),
+    );
   }
 }
 
 class VeterinaryBuffaloDetector {
   // 🐃 Clean Buffalo Identification Algorithm Implementation
+  static const int _sampleStep = 2;
   
   BuffaloAnalysisResult identifyBuffalo(
     String imagePath, {
@@ -118,82 +422,725 @@ class VeterinaryBuffaloDetector {
     int daysInMilk = 30,
     String feed = 'Standard',
   }) {
+    InferenceLogger.log('RULES', 'identifyBuffalo() START path=$imagePath');
     debugPrint('[STEP 0] Input: $imagePath');
     
     try {
-      // 🔹 Step 1: Preprocessing
       debugPrint('[STEP 1] Preprocessing image...');
       final processedImage = _preprocessImage(imagePath);
       if (processedImage == null) {
         return _createRejectResult('Cannot process image');
       }
-      
-      // 🔹 Step 2: Object Detection (Primary Filter)
-      debugPrint('[STEP 2] Object detection...');
-      final objectDetection = _detectObjects(processedImage);
-      if (objectDetection['rejected'] == true) {
-        return _createRejectResult(objectDetection['reason']);
+
+      final fullImage = _loadOrientedImage(imagePath);
+      final anatomy = RearAnatomyDetector().detectFromPath(imagePath);
+      if (fullImage != null) {
+        final blockReason = _nonBuffaloPhotoReason(fullImage);
+        if (blockReason != null) {
+          InferenceLogger.log('RULES', 'REJECT: $blockReason');
+          return _createRejectResult(blockReason);
+        }
+        if (anatomy != null && _landmarksOnDeviceSurface(fullImage, anatomy)) {
+          const reason =
+              'Not a buffalo — laptop or screen detected (not an animal rear)';
+          InferenceLogger.log('RULES', 'REJECT: $reason');
+          return _createRejectResult(reason);
+        }
       }
-      
-      // 🔹 Step 3: Species Classification
-      debugPrint('[STEP 3] Species classification...');
-      final classification = _classifySpecies(processedImage);
-      if (classification['rejected'] == true) {
-        return _createRejectResult(classification['reason']);
+
+      final hasAnimalRear = anatomy != null &&
+          !anatomy.isTemplateFallback &&
+          _isPlausibleRearBuffalo(anatomy) &&
+          fullImage != null &&
+          _hasLivestockSceneSignature(fullImage) &&
+          _hasRearAnimalMass(fullImage, anatomy) &&
+          !_hasHumanPhotoSignals(fullImage);
+
+      final objectOnPreview = _detectObjects(processedImage);
+      if (objectOnPreview['rejected'] == true) {
+        final reason = objectOnPreview['reason'] as String? ?? '';
+        final isHuman = reason.toLowerCase().contains('human');
+        if (isHuman || !hasAnimalRear) {
+          InferenceLogger.log('RULES', 'REJECT: $reason');
+          return _createRejectResult(reason);
+        }
       }
-      
-      // 🔹 Step 4: Visual Validation Rules
-      debugPrint('[STEP 4] Visual validation...');
-      final visualValidation = _validateVisualQuality(processedImage);
-      if (visualValidation['rejected'] == true) {
-        return _createRejectResult(visualValidation['reason']);
+
+      final rearBuffalo = hasAnimalRear;
+
+      late final Map<String, dynamic> keypoints;
+      late final double buffaloProb;
+      late final Map<String, dynamic> visualValidation;
+
+      if (rearBuffalo) {
+        InferenceLogger.log(
+          'RULES',
+          'Rear anatomy OK conf=${(anatomy!.confidence * 100).toStringAsFixed(0)}% '
+          'L=${anatomy.leftPin} U=${anatomy.udder}',
+        );
+        keypoints = {
+          'rejected': false,
+          'confidence': anatomy.confidence,
+          'spine': anatomy.pointA,
+          'leftHip': anatomy.leftPin,
+          'rightHip': anatomy.rightPin,
+          'udder': anatomy.udder,
+        };
+        buffaloProb = math.max(0.80, _calculateBuffaloProbability(processedImage));
+        visualValidation = _validateVisualQuality(processedImage);
+        if (visualValidation['rejected'] == true) {
+          InferenceLogger.log('RULES', 'REJECT step 4: ${visualValidation['reason']}');
+          return _createRejectResult(visualValidation['reason']);
+        }
+      } else {
+        debugPrint('[STEP 2] Fallback rules (no rear anatomy)...');
+        final objectDetection = _detectObjects(processedImage);
+        if (objectDetection['rejected'] == true) {
+          InferenceLogger.log('RULES', 'REJECT step 2: ${objectDetection['reason']}');
+          return _createRejectResult(objectDetection['reason']);
+        }
+
+        final classification = _classifySpecies(processedImage);
+        if (classification['rejected'] == true) {
+          InferenceLogger.log('RULES', 'REJECT step 3: ${classification['reason']}');
+          return _createRejectResult(classification['reason']);
+        }
+        buffaloProb = classification['buffalo_prob'] as double;
+
+        visualValidation = _validateVisualQuality(processedImage);
+        if (visualValidation['rejected'] == true) {
+          InferenceLogger.log('RULES', 'REJECT step 4: ${visualValidation['reason']}');
+          return _createRejectResult(visualValidation['reason']);
+        }
+
+        keypoints = _detectKeypointsFullImage(imagePath, processedImage);
+        if (keypoints['rejected'] == true) {
+          InferenceLogger.log('RULES', 'REJECT step 5: ${keypoints['reason']}');
+          return _createRejectResult(keypoints['reason']);
+        }
       }
-      
-      // 🔹 Step 5: Anatomical Keypoint Detection
-      debugPrint('[STEP 5] Keypoint detection...');
-      final keypoints = _detectKeypoints(processedImage);
-      if (keypoints['rejected'] == true) {
-        return _createRejectResult(keypoints['reason']);
-      }
-      
-      // 🔹 Step 6: Structural Validation
+
       debugPrint('[STEP 6] Structural validation...');
       final structuralValidation = _validateStructure(keypoints);
       if (structuralValidation['rejected'] == true) {
+        InferenceLogger.log('RULES', 'REJECT step 6: ${structuralValidation['reason']}');
         return _createRejectResult(structuralValidation['reason']);
       }
-      
-      // 🔹 Step 7: Confidence Scoring
+
       debugPrint('[STEP 7] Confidence scoring...');
       final confidence = _calculateFinalConfidence(
-        classification['buffalo_prob'],
-        keypoints['confidence'],
-        visualValidation['quality_score'],
+        buffaloProb,
+        keypoints['confidence'] as double,
+        visualValidation['quality_score'] as double,
       );
-      
-      if (confidence < 0.75) {
+
+      final minConfidence = rearBuffalo ? 0.48 : 0.58;
+      if (confidence < minConfidence) {
+        InferenceLogger.log('RULES', 'REJECT step 7: low confidence ${(confidence * 100).toStringAsFixed(1)}%');
         return _createRejectResult('Low confidence: ${(confidence * 100).toStringAsFixed(1)}%');
       }
       
+      // 🔹 Step 7b: Sex classification (rear udder vs bull)
+      debugPrint('[STEP 7b] Sex classification...');
+      final preFeatures = _extractFeatures(processedImage);
+      final sex = SexClassifierService().classifyImage(
+        processedImage,
+        udderKeypointDetected: keypoints['udder'] != null,
+        udderSizeHint: preFeatures['udder_size'] as String?,
+      );
+      debugPrint(
+        '[SEX] ${sex.label} ${(sex.confidence * 100).toStringAsFixed(1)}% — ${sex.detail}',
+      );
+
       // 🔹 Step 8: Final Output
       debugPrint('[STEP 8] Final output...');
-      final features = _extractFeatures(processedImage);
+      final features = preFeatures;
+      features['buffalo_prob'] = buffaloProb;
+      features['sex'] = sex.label;
+      features['sex_confidence'] = sex.confidence;
+      features['sex_female_prob'] = sex.femaleProbability;
+      features['sex_detail'] = sex.detail;
+      features['sex_is_bull'] = sex.isBull;
       final prediction = _predictMilkProduction(features, breed, age, lactation, daysInMilk, feed);
       
+      InferenceLogger.log('RULES', 'PASS — all 8 steps OK, handing off to Milk Mirror + TFLite');
+      final kp = <Offset>[
+        if (keypoints['leftHip'] != null) keypoints['leftHip'] as Offset,
+        if (keypoints['rightHip'] != null) keypoints['rightHip'] as Offset,
+        if (keypoints['udder'] != null) keypoints['udder'] as Offset,
+        if (keypoints['spine'] != null) keypoints['spine'] as Offset,
+      ];
       return BuffaloAnalysisResult(
         status: 'valid',
         confidence: confidence,
         animal: 'buffalo',
         features: features,
         prediction: prediction,
+        keypoints: kp,
       );
       
     } catch (e) {
+      InferenceLogger.log('RULES', 'EXCEPTION: $e');
       debugPrint('[BUFFALO DETECTION] Error: $e');
       return _createRejectResult('Analysis failed: ${e.toString()}');
     }
   }
   
+  img.Image? _loadOrientedImage(String imagePath) {
+    try {
+      final bytes = File(imagePath).readAsBytesSync();
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return null;
+      return img.bakeOrientation(decoded);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Human, phone, laptop, screen, or other non-buffalo scenes (always enforced).
+  String? _nonBuffaloPhotoReason(img.Image image) {
+    if (_isHandOrPhoneScene(image)) {
+      return 'Not a buffalo — phone or hand photo detected';
+    }
+    if (_hasHumanPhotoSignals(image)) {
+      return 'Human detected — photograph the buffalo rear only, not people';
+    }
+    if (_isStrongElectronicDeviceScene(image) ||
+        (_isElectronicDeviceScene(image) &&
+            !_hasLivestockSceneSignature(image))) {
+      return 'Not a buffalo — laptop, phone screen, or device detected';
+    }
+    if (_isObviousNonLivestock(image)) {
+      return 'Not a buffalo — use a rear photo of the animal, not a screen or object';
+    }
+    if (!_hasLivestockSceneSignature(image)) {
+      return 'Not a buffalo — no farm animal detected in this photo';
+    }
+    return null;
+  }
+
+  double _torsoLivestockRatio(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+    var organic = 0;
+    var grass = 0;
+    var samples = 0;
+    final yStart = (h * 0.20).round();
+    final yEnd = (h * 0.72).round();
+    final xStart = (w * 0.14).round();
+    final xEnd = (w * 0.86).round();
+
+    for (var y = yStart; y < yEnd; y += _sampleStep) {
+      for (var x = xStart; x < xEnd; x += _sampleStep) {
+        samples++;
+        final p = image.getPixel(x, y);
+        if (_isOrganicLivestockPixel(p)) organic++;
+        if (_isGrassOrMudPixel(p)) grass++;
+      }
+    }
+    if (samples == 0) return 0;
+    return (organic + grass) / samples;
+  }
+
+  /// Farm animal rear scene: organic hide in central torso band (not floor/wall).
+  bool _hasLivestockSceneSignature(img.Image image) {
+    if (_isElectronicDeviceScene(image) && _torsoLivestockRatio(image) < 0.14) {
+      return false;
+    }
+
+    final signature = _torsoLivestockRatio(image);
+    InferenceLogger.log(
+      'RULES',
+      'Livestock torso signature=${(signature * 100).toStringAsFixed(1)}%',
+    );
+    return signature >= 0.16;
+  }
+
+  bool _landmarksOnDeviceSurface(img.Image image, RearAnatomyLandmarks anatomy) {
+    final w = image.width;
+    final h = image.height;
+    final points = [anatomy.pointA, anatomy.leftPin, anatomy.rightPin, anatomy.udder];
+    var onDevice = 0;
+    for (final pt in points) {
+      final x = (pt.dx * w).round().clamp(0, w - 1);
+      final y = (pt.dy * h).round().clamp(0, h - 1);
+      final p = image.getPixel(x, y);
+      if (_isDeviceSurfacePixel(p)) onDevice++;
+    }
+    return onDevice >= 3;
+  }
+
+  bool _isDeviceSurfacePixel(img.Pixel p) {
+    return _isScreenUiPixel(p) ||
+        _isDarkUiPixel(p) ||
+        _isSyntaxHighlightPixel(p) ||
+        _isSilverMetalPixel(p) ||
+        _isBezelPixel(p);
+  }
+
+  /// High-confidence laptop/monitor (silver + dark IDE, or bezel + LCD).
+  bool _isStrongElectronicDeviceScene(img.Image image) {
+    if (_torsoLivestockRatio(image) >= 0.14) return false;
+
+    final w = image.width;
+    final h = image.height;
+    var screen = 0;
+    var bezel = 0;
+    var silver = 0;
+    var dark = 0;
+    var samples = 0;
+
+    final cx0 = (w * 0.18).round();
+    final cx1 = (w * 0.82).round();
+    final cy0 = (h * 0.12).round();
+    final cy1 = (h * 0.78).round();
+
+    for (var y = cy0; y < cy1; y += _sampleStep) {
+      for (var x = cx0; x < cx1; x += _sampleStep) {
+        samples++;
+        final p = image.getPixel(x, y);
+        if (_isScreenUiPixel(p)) screen++;
+        if (_isBezelPixel(p)) bezel++;
+        if (_isSilverMetalPixel(p)) silver++;
+        if (_isDarkUiPixel(p)) dark++;
+      }
+    }
+    if (samples == 0) return false;
+
+    final screenR = screen / samples;
+    final bezelR = bezel / samples;
+    final silverR = silver / samples;
+    final darkR = dark / samples;
+
+    if (bezelR > 0.06 && screenR > 0.10) return true;
+    if (silverR > 0.08 && darkR > 0.12) return true;
+    return false;
+  }
+
+  /// Laptop, monitor, phone LCD, keyboard — rectangular electronics in frame.
+  bool _isElectronicDeviceScene(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+    var screen = 0;
+    var bezel = 0;
+    var keyboard = 0;
+    var centerSamples = 0;
+
+    final cx0 = (w * 0.18).round();
+    final cx1 = (w * 0.82).round();
+    final cy0 = (h * 0.12).round();
+    final cy1 = (h * 0.78).round();
+
+    for (var y = cy0; y < cy1; y += _sampleStep) {
+      for (var x = cx0; x < cx1; x += _sampleStep) {
+        centerSamples++;
+        final p = image.getPixel(x, y);
+        if (_isScreenUiPixel(p)) screen++;
+        if (_isBezelPixel(p)) bezel++;
+        if (y > h * 0.62 && _isKeyboardPixel(p)) keyboard++;
+      }
+    }
+    if (centerSamples == 0) return false;
+
+    final screenR = screen / centerSamples;
+    final bezelR = bezel / centerSamples;
+    final keyboardR = keyboard / centerSamples;
+
+    // Laptop signature: neutral black bezel + colorful LCD (both required).
+    if (bezelR > 0.06 && screenR > 0.10) return true;
+    if (bezelR > 0.05 && screenR > 0.12 && keyboardR > 0.04) return true;
+
+    var upperWhite = 0;
+    var upperSamples = 0;
+    final upperEnd = (h * 0.38).round();
+    for (var y = 0; y < upperEnd; y += _sampleStep) {
+      for (var x = 0; x < w; x += _sampleStep) {
+        upperSamples++;
+        final p = image.getPixel(x, y);
+        final r = p.r.toInt();
+        final g = p.g.toInt();
+        final b = p.b.toInt();
+        final br = (r + g + b) / 3;
+        final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+        if (br > 215 && sat < 22 && (r - g).abs() < 12 && (r - b).abs() < 12) {
+          upperWhite++;
+        }
+      }
+    }
+    final whiteWallR = upperSamples == 0 ? 0.0 : upperWhite / upperSamples;
+    if (whiteWallR > 0.28 && bezelR > 0.05 && screenR > 0.10) return true;
+
+    if (_isSilverLaptopWithDarkScreen(image)) return true;
+
+    return false;
+  }
+
+  /// Silver/gray laptop body + dark monitor (common desk photo).
+  bool _isSilverLaptopWithDarkScreen(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+    var silver = 0;
+    var darkUi = 0;
+    var syntax = 0;
+    var samples = 0;
+
+    final cx0 = (w * 0.16).round();
+    final cx1 = (w * 0.84).round();
+    final cy0 = (h * 0.14).round();
+    final cy1 = (h * 0.80).round();
+
+    for (var y = cy0; y < cy1; y += _sampleStep) {
+      for (var x = cx0; x < cx1; x += _sampleStep) {
+        samples++;
+        final p = image.getPixel(x, y);
+        if (_isSilverMetalPixel(p)) silver++;
+        if (_isDarkUiPixel(p)) darkUi++;
+        if (_isSyntaxHighlightPixel(p)) syntax++;
+      }
+    }
+    if (samples == 0) return false;
+
+    final silverR = silver / samples;
+    final darkR = darkUi / samples;
+    final syntaxR = syntax / samples;
+
+    if (silverR > 0.06 && darkR > 0.10) return true;
+    if (silverR > 0.04 && darkR > 0.14 && syntaxR > 0.010) return true;
+    if (silverR > 0.08 && syntaxR > 0.008) return true;
+    return false;
+  }
+
+  bool _isSilverMetalPixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (br < 88 || br > 210 || sat > 28) return false;
+    return (r - g).abs() < 16 && (r - b).abs() < 16 && (g - b).abs() < 16;
+  }
+
+  bool _isDarkUiPixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    return br < 58 && sat < 45;
+  }
+
+  bool _isSyntaxHighlightPixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (br < 45 || sat < 32) return false;
+    if (g > r + 16 && g > b + 8) return true;
+    if (b > r + 14 && b > g - 4) return true;
+    if (r > g + 18 && r > b + 10) return true;
+    if (r > 115 && b > 115 && g < r - 18) return true;
+    return false;
+  }
+
+  bool _isScreenUiPixel(img.Pixel p) {
+    if (_isSkinTone(p)) return false;
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (br > 210 && sat < 30) return true;
+    if (b > r + 18 && b > g + 6 && br > 105 && sat > 28) return true;
+    if (r > 115 && b > 115 && g < r - 18 && br > 95 && sat > 30) return true;
+    return false;
+  }
+
+  bool _isBezelPixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (br > 42 || br < 6 || sat > 26) return false;
+    if (r > g + 14 || r > b + 10) return false;
+    return (r - g).abs() < 14 && (r - b).abs() < 14;
+  }
+
+  bool _isKeyboardPixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    return sat < 22 && br > 70 && br < 175;
+  }
+
+  bool _isOrganicLivestockPixel(img.Pixel p) {
+    if (_isScreenUiPixel(p) || _isBezelPixel(p)) return false;
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (br < 22 || br > 168) return false;
+    if (b > r + 28 && br > 85) return false;
+    if (g > r + 38 && br > 95) return false;
+    if (sat < 8 && br > 45 && br < 200) return false;
+    return r >= 50 && r >= g - 18 && r >= b - 12 && sat >= 9;
+  }
+
+  bool _isGrassOrMudPixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (g > r + 14 && g > b + 10 && br > 45 && br < 185 && sat > 12) {
+      return true;
+    }
+    if (br > 35 && br < 120 && r > 70 && g > 50 && b < 70 && sat > 10) {
+      return true;
+    }
+    return false;
+  }
+
+  /// Portrait, selfie, face, or skin-heavy scenes — never bypass for anatomy.
+  bool _hasHumanPhotoSignals(img.Image image) {
+    if (_isHumanDominantScene(image)) return true;
+
+    final upperSkin = _skinRatioInRegion(image, y0: 0, y1: 0.58);
+    final faceLike = _countFaceLikeInRegion(image, y0: 0, y1: 0.45);
+    if (upperSkin > 0.075) return true;
+    if (faceLike > 12 && upperSkin > 0.038) return true;
+
+    final centerSkin = _skinRatioInRegion(
+      image,
+      y0: 0.08,
+      y1: 0.78,
+      x0: 0.18,
+      x1: 0.82,
+    );
+    if (centerSkin > 0.09) return true;
+
+    final portrait = image.height > image.width * 1.05;
+    if (portrait && upperSkin > 0.055) return true;
+
+    final work = image.width > 512
+        ? img.copyResize(image, width: 512)
+        : image;
+    return _detectHumanPresenceSimple(work, work.width, work.height);
+  }
+
+  double _skinRatioInRegion(
+    img.Image image, {
+    required double y0,
+    required double y1,
+    double x0 = 0,
+    double x1 = 1,
+  }) {
+    final w = image.width;
+    final h = image.height;
+    var skin = 0;
+    var samples = 0;
+    final yStart = (h * y0).round();
+    final yEnd = (h * y1).round();
+    final xStart = (w * x0).round();
+    final xEnd = (w * x1).round();
+
+    for (var y = yStart; y < yEnd; y += _sampleStep) {
+      for (var x = xStart; x < xEnd; x += _sampleStep) {
+        samples++;
+        if (_isSkinTone(image.getPixel(x, y))) skin++;
+      }
+    }
+    if (samples == 0) return 0;
+    return skin / samples;
+  }
+
+  int _countFaceLikeInRegion(
+    img.Image image, {
+    required double y0,
+    required double y1,
+  }) {
+    final w = image.width;
+    final h = image.height;
+    var count = 0;
+    final yStart = (h * y0).round();
+    final yEnd = (h * y1).round();
+
+    for (var y = yStart; y < yEnd; y += _sampleStep) {
+      for (var x = 0; x < w; x += _sampleStep) {
+        if (_isFaceLikePixel(image, x, y, w, h)) count++;
+      }
+    }
+    return count;
+  }
+
+  bool _isHumanDominantScene(img.Image image) {
+    final h = image.height;
+    final w = image.width;
+    var skinUpper = 0;
+    var faceLike = 0;
+    var upperSamples = 0;
+    final upperEnd = (h * 0.62).round();
+
+    for (var y = 0; y < upperEnd; y += _sampleStep) {
+      for (var x = 0; x < w; x += _sampleStep) {
+        upperSamples++;
+        final p = image.getPixel(x, y);
+        if (_isSkinTone(p)) skinUpper++;
+        if (y < h * 0.45 && _isFaceLikePixel(image, x, y, w, h)) faceLike++;
+      }
+    }
+    if (upperSamples == 0) return false;
+
+    final skinRatio = skinUpper / upperSamples;
+    if (skinRatio > 0.08) return true;
+    if (faceLike > 14 && skinRatio > 0.045) return true;
+    return false;
+  }
+
+  bool _isHandOrPhoneScene(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+    final cx0 = (w * 0.22).round();
+    final cx1 = (w * 0.78).round();
+    final cy0 = (h * 0.18).round();
+    final cy1 = (h * 0.72).round();
+
+    var skin = 0;
+    var screenLike = 0;
+    var neutral = 0;
+    var samples = 0;
+
+    for (var y = cy0; y < cy1; y += _sampleStep) {
+      for (var x = cx0; x < cx1; x += _sampleStep) {
+        samples++;
+        final p = image.getPixel(x, y);
+        final r = p.r.toInt();
+        final g = p.g.toInt();
+        final b = p.b.toInt();
+        final br = (r + g + b) / 3;
+        final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+
+        if (_isSkinTone(p)) skin++;
+        if (b > r + 15 && b > g + 8 && br > 95) screenLike++;
+        if (sat < 20 && br > 50 && br < 210) neutral++;
+        if (br > 215) screenLike++;
+      }
+    }
+    if (samples == 0) return false;
+
+    final skinR = skin / samples;
+    final screenR = screenLike / samples;
+    final neutralR = neutral / samples;
+
+    // Selfie / person holding phone: skin + bright LCD/bezel region.
+    if (skinR > 0.06 && (screenR > 0.12 || neutralR > 0.38)) return true;
+    if (screenR > 0.22 && skinR > 0.03) return true;
+    return false;
+  }
+
+  bool _isSkinTone(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    if (br < 70 || br > 235) return false;
+    // Peach/tan human skin — not dark brown buffalo hide.
+    return r > 105 &&
+        r - g > 26 &&
+        r - b > 32 &&
+        g > b - 15 &&
+        g - b < 55;
+  }
+
+  bool _hasRearAnimalMass(img.Image image, RearAnatomyLandmarks anatomy) {
+    final w = image.width;
+    final h = image.height;
+    final x0 = (math.min(anatomy.leftPin.dx, anatomy.rightPin.dx) * w).round();
+    final x1 = (math.max(anatomy.leftPin.dx, anatomy.rightPin.dx) * w).round();
+    final uy = (anatomy.udder.dy * h).round();
+    final y0 = (uy - h * 0.18).clamp(0, h - 1).round();
+    final y1 = (uy + h * 0.06).clamp(0, h - 1).round();
+
+    var animal = 0;
+    var skin = 0;
+    var samples = 0;
+
+    for (var y = y0; y <= y1; y += _sampleStep) {
+      for (var x = x0; x <= x1; x += _sampleStep) {
+        samples++;
+        final p = image.getPixel(x, y);
+        if (_isSkinTone(p)) {
+          skin++;
+          continue;
+        }
+        if (_isAnimalHidePixel(p)) animal++;
+      }
+    }
+    if (samples == 0) return false;
+    if (skin / samples > 0.18) return false;
+
+    final upperSkin = _skinRatioInRegion(image, y0: 0, y1: 0.52);
+    if (upperSkin > 0.06) return false;
+
+    return animal / samples >= 0.14;
+  }
+
+  bool _isAnimalHidePixel(img.Pixel p) {
+    final r = p.r.toInt();
+    final g = p.g.toInt();
+    final b = p.b.toInt();
+    final br = (r + g + b) / 3;
+    final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+    if (br < 18 || br > 175) return false;
+    if (sat < 8 && br > 40 && br < 200) return false;
+    if (g > r + 32 && g > b + 26) return false;
+    if (b > r + 38) return false;
+    return true;
+  }
+
+  /// Laptop / monitor / uniform wall — not a farm animal photo.
+  bool _isObviousNonLivestock(img.Image image) {
+    final w = image.width;
+    final h = image.height;
+    var neutral = 0;
+    var organic = 0;
+    var samples = 0;
+    final y0 = (h * 0.15).round();
+
+    for (var y = y0; y < h; y += _sampleStep) {
+      for (var x = 0; x < w; x += _sampleStep) {
+        samples++;
+        final p = image.getPixel(x, y);
+        final r = p.r.toInt();
+        final g = p.g.toInt();
+        final b = p.b.toInt();
+        final br = (r + g + b) / 3;
+        final sat = math.max(r, math.max(g, b)) - math.min(r, math.min(g, b));
+        if (sat < 18 && br > 45 && br < 200) neutral++;
+        if (_isOrganicLivestockPixel(p) || _isGrassOrMudPixel(p)) organic++;
+        if (b > r + 20 && b > g + 10 && br > 100) neutral++;
+      }
+    }
+    if (samples == 0) return false;
+    final neutralRatio = neutral / samples;
+    final organicRatio = organic / samples;
+    return neutralRatio > 0.68 && organicRatio < 0.10;
+  }
+
+  bool _isPlausibleRearBuffalo(RearAnatomyLandmarks anatomy) {
+    if (anatomy.confidence < 0.48) return false;
+    final spread = (anatomy.rightPin.dx - anatomy.leftPin.dx).abs();
+    if (spread < 0.10 || spread > 0.88) return false;
+    if (anatomy.leftPin.dy >= anatomy.udder.dy) return false;
+    if (anatomy.udder.dy < 0.30) return false;
+    if (anatomy.pointA.dy >= anatomy.udder.dy) return false;
+    return true;
+  }
+
   // 🔹 Step 1: Preprocessing
   img.Image? _preprocessImage(String imagePath) {
     try {
@@ -245,8 +1192,8 @@ class VeterinaryBuffaloDetector {
     
     final midY = height ~/ 2;
     
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
+    for (int y = 0; y < height; y += _sampleStep) {
+      for (int x = 0; x < width; x += _sampleStep) {
         final brightness = image.getPixel(x, y).r;
         
         // Face detection (upper region, circular patterns)
@@ -263,12 +1210,28 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    // Human indicators
-    final hasFace = faceLikeRegions > 10;
-    final hasHumanProportions = upperBodyPixels > lowerBodyPixels * 1.5;
-    
-    debugPrint('[HUMAN DETECTION] Face regions: $faceLikeRegions, Body ratio: ${upperBodyPixels / lowerBodyPixels}');
-    return hasFace && hasHumanProportions;
+    var skinPixels = 0;
+    var upperSamples = 0;
+    final upperEnd = (height * 0.55).round();
+    for (var y = 0; y < upperEnd; y += _sampleStep) {
+      for (var x = 0; x < width; x += _sampleStep) {
+        upperSamples++;
+        if (_isSkinTone(image.getPixel(x, y))) skinPixels++;
+      }
+    }
+    final skinRatio = upperSamples == 0 ? 0.0 : skinPixels / upperSamples;
+
+    final hasFace = faceLikeRegions > 8;
+    final hasHumanProportions = lowerBodyPixels > 0 &&
+        upperBodyPixels > lowerBodyPixels * 1.2;
+
+    debugPrint(
+      '[HUMAN DETECTION] Face=$faceLikeRegions skin=${skinRatio.toStringAsFixed(2)} '
+      'body=${upperBodyPixels / math.max(1, lowerBodyPixels)}',
+    );
+    return skinRatio > 0.07 ||
+        (hasFace && skinRatio > 0.035 && hasHumanProportions) ||
+        (faceLikeRegions > 20 && skinRatio > 0.03);
   }
   
   bool _isFaceLikePixel(img.Image image, int x, int y, int width, int height) {
@@ -287,21 +1250,23 @@ class VeterinaryBuffaloDetector {
   }
   
   bool _detectAnimalPresence(img.Image image, int width, int height) {
-    int animalPixels = 0;
-    int totalPixels = width * height;
-    
-    for (int y = 0; y < height; y++) {
-      for (int x = 0; x < width; x++) {
-        final brightness = image.getPixel(x, y).r;
-        if (brightness > 30 && brightness < 200) {
-          animalPixels++;
-        }
+    if (_isElectronicDeviceScene(image)) return false;
+
+    var organic = 0;
+    var sampledPixels = 0;
+    final yStart = (height * 0.10).round();
+
+    for (var y = yStart; y < height; y += _sampleStep) {
+      for (var x = 0; x < width; x += _sampleStep) {
+        sampledPixels++;
+        final p = image.getPixel(x, y);
+        if (_isOrganicLivestockPixel(p) || _isGrassOrMudPixel(p)) organic++;
       }
     }
-    
-    final animalRatio = animalPixels / totalPixels;
-    debugPrint('[ANIMAL DETECTION] Animal pixel ratio: $animalRatio');
-    return animalRatio > 0.2;
+
+    final ratio = sampledPixels == 0 ? 0.0 : organic / sampledPixels;
+    debugPrint('[ANIMAL DETECTION] Livestock organic ratio: $ratio');
+    return ratio > 0.12;
   }
   
   // 🔹 Step 3: Species Classification
@@ -313,64 +1278,72 @@ class VeterinaryBuffaloDetector {
     
     debugPrint('[SPECIES] Buffalo: ${buffaloProb.toStringAsFixed(3)}, Cow: ${cowProb.toStringAsFixed(3)}, Other: ${otherProb.toStringAsFixed(3)}');
     
-    if (buffaloProb < 0.65) {
+    if (buffaloProb < 0.50) {
       return {'rejected': true, 'reason': 'Not a buffalo (confidence: ${(buffaloProb * 100).toStringAsFixed(1)}%)'};
+    }
+
+    if (cowProb > buffaloProb + 0.12 && cowProb > 0.55) {
+      return {'rejected': true, 'reason': 'Looks like cattle, not buffalo — use a buffalo rear photo'};
     }
     
     return {'rejected': false, 'buffalo_prob': buffaloProb};
   }
   
   double _calculateBuffaloProbability(img.Image image) {
-    // Enhanced buffalo characteristics detection using RGB colors
+    // Enhanced buffalo characteristics detection using RGB colors with breed identification
     int darkPixels = 0;
     int blackPixels = 0;
+    int brownPixels = 0;
     int bodyMassPixels = 0;
-    int totalPixels = image.width * image.height;
+    int grayPixels = 0;
+    int sampledPixels = 0;
     
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
+    for (int y = 0; y < image.height; y += _sampleStep) {
+      for (int x = 0; x < image.width; x += _sampleStep) {
+        sampledPixels++;
         final pixel = image.getPixel(x, y);
         final r = pixel.r;
         final g = pixel.g;
         final b = pixel.b;
         final brightness = (r + g + b) / 3;
         
-        // Buffalo are typically dark/black
-        if (brightness < 80) darkPixels++;
-        if (brightness < 50) blackPixels++; // Very dark/black buffalo
+        // Buffalo color patterns - more sophisticated
+        if (brightness < 90) darkPixels++; // Dark buffalo
+        if (brightness < 60) blackPixels++; // Very dark/black buffalo
+        if (brightness < 120 && r > 80 && g > 70 && b > 60) brownPixels++; // Dark brown buffalo
+        
+        // Gray/dull colors (common in desi buffalo)
+        if (r > 50 && r < 100 && g > 50 && g < 100 && b > 50 && b < 100) grayPixels++;
         
         // Buffalo body mass detection
-        if (brightness > 20 && brightness < 140) bodyMassPixels++;
-        
-        // Buffalo color patterns (dark with some variation)
-        if (r < 100 && g < 100 && b < 100) darkPixels++;
+        if (brightness > 20 && brightness < 150) bodyMassPixels++;
       }
     }
     
-    final darkRatio = darkPixels / totalPixels;
-    final blackRatio = blackPixels / totalPixels;
-    final bodyRatio = bodyMassPixels / totalPixels;
+    final darkRatio = sampledPixels == 0 ? 0.0 : darkPixels / sampledPixels;
+    final blackRatio = sampledPixels == 0 ? 0.0 : blackPixels / sampledPixels;
+    final brownRatio = sampledPixels == 0 ? 0.0 : brownPixels / sampledPixels;
+    final grayRatio = sampledPixels == 0 ? 0.0 : grayPixels / sampledPixels;
+    final bodyRatio = sampledPixels == 0 ? 0.0 : bodyMassPixels / sampledPixels;
     
-    debugPrint('[BUFFALO PROB] Dark: $darkRatio, Black: $blackRatio, Body: $bodyRatio');
+    debugPrint('[BUFFALO PROB] Dark: $darkRatio, Black: $blackRatio, Brown: $brownRatio, Gray: $grayRatio, Body: $bodyRatio');
     
-    // Enhanced buffalo scoring with RGB features
     double buffaloScore = 0.0;
-    
-    // Dark/black color feature (buffalo are typically dark)
-    if (blackRatio > 0.2) buffaloScore += 0.4;
-    else if (blackRatio > 0.1) buffaloScore += 0.3;
-    else if (blackRatio > 0.05) buffaloScore += 0.2;
-    
-    // Overall dark color feature
-    if (darkRatio > 0.4) buffaloScore += 0.3;
-    else if (darkRatio > 0.3) buffaloScore += 0.2;
-    else if (darkRatio > 0.2) buffaloScore += 0.1;
-    
-    // Body mass feature (buffalo have substantial body)
-    if (bodyRatio > 0.6) buffaloScore += 0.3;
-    else if (bodyRatio > 0.4) buffaloScore += 0.2;
-    else if (bodyRatio > 0.2) buffaloScore += 0.1;
-    
+
+    if (brownRatio > 0.10) buffaloScore += 0.28;
+    else if (brownRatio > 0.05) buffaloScore += 0.16;
+
+    if (blackRatio > 0.08 && blackRatio < 0.50) buffaloScore += 0.24;
+    else if (blackRatio > 0.04) buffaloScore += 0.12;
+
+    if (darkRatio > 0.18 && darkRatio < 0.60) buffaloScore += 0.18;
+
+    if (bodyRatio > 0.25 && bodyRatio < 0.80) buffaloScore += 0.14;
+
+    if (grayRatio > 0.40 && brownRatio < 0.05 && blackRatio < 0.06) {
+      buffaloScore -= 0.40;
+    }
+
     debugPrint('[BUFFALO PROB] Final score: $buffaloScore');
     return math.max(0.0, math.min(1.0, buffaloScore));
   }
@@ -379,10 +1352,11 @@ class VeterinaryBuffaloDetector {
     // Cows are typically lighter colored with different body shape
     int lightPixels = 0;
     int brownPixels = 0;
-    int totalPixels = image.width * image.height;
+    int sampledPixels = 0;
     
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
+    for (int y = 0; y < image.height; y += _sampleStep) {
+      for (int x = 0; x < image.width; x += _sampleStep) {
+        sampledPixels++;
         final pixel = image.getPixel(x, y);
         final r = pixel.r;
         final g = pixel.g;
@@ -397,19 +1371,19 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    final lightRatio = lightPixels / totalPixels;
-    final brownRatio = brownPixels / totalPixels;
+    final lightRatio = sampledPixels == 0 ? 0.0 : lightPixels / sampledPixels;
+    final brownRatio = sampledPixels == 0 ? 0.0 : brownPixels / sampledPixels;
     
     debugPrint('[COW PROB] Light: $lightRatio, Brown: $brownRatio');
     
-    // Cow scoring based on light and brown colors
+    // Cow scoring based on light and brown colors - less aggressive
     double cowScore = 0.0;
-    if (lightRatio > 0.3) cowScore += 0.6;
-    else if (lightRatio > 0.2) cowScore += 0.4;
-    else if (lightRatio > 0.1) cowScore += 0.2;
+    if (lightRatio > 0.5) cowScore += 0.6;
+    else if (lightRatio > 0.4) cowScore += 0.4;
+    else if (lightRatio > 0.3) cowScore += 0.2;
     
-    if (brownRatio > 0.4) cowScore += 0.4;
-    else if (brownRatio > 0.2) cowScore += 0.2;
+    if (brownRatio > 0.6) cowScore += 0.4;
+    else if (brownRatio > 0.4) cowScore += 0.2;
     
     return math.max(0.0, math.min(1.0, cowScore));
   }
@@ -510,7 +1484,28 @@ class VeterinaryBuffaloDetector {
     return math.max(0.0, math.min(1.0, qualityScore));
   }
   
-  // 🔹 Step 5: Anatomical Keypoint Detection
+  Map<String, dynamic> _detectKeypointsFullImage(
+    String imagePath,
+    img.Image fallback224,
+  ) {
+    final anatomy = RearAnatomyDetector().detectFromPath(imagePath);
+    if (anatomy != null && _isPlausibleRearBuffalo(anatomy)) {
+      debugPrint(
+        '[KEYPOINTS] Rear anatomy: L=${anatomy.leftPin} R=${anatomy.rightPin} U=${anatomy.udder}',
+      );
+      return {
+        'rejected': false,
+        'confidence': anatomy.confidence,
+        'spine': anatomy.pointA,
+        'leftHip': anatomy.leftPin,
+        'rightHip': anatomy.rightPin,
+        'udder': anatomy.udder,
+      };
+    }
+    return _detectKeypoints(fallback224);
+  }
+
+  // 🔹 Step 5 fallback: 224px heuristic keypoints
   Map<String, dynamic> _detectKeypoints(img.Image image) {
     final width = image.width;
     final height = image.height;
@@ -558,7 +1553,7 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    return spinePixels > 10 ? Offset(centerX / width, 0.2) : null;
+    return spinePixels > 5 ? Offset(centerX / width, 0.2) : null;
   }
   
   Offset? _detectLeftHip(img.Image image, int width, int height) {
@@ -579,7 +1574,7 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    return hipPixels > 5 ? Offset((centerX - hipRegion/2) / width, hipY / height) : null;
+    return hipPixels > 3 ? Offset((centerX - hipRegion/2) / width, hipY / height) : null;
   }
   
   Offset? _detectRightHip(img.Image image, int width, int height) {
@@ -600,28 +1595,43 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    return hipPixels > 5 ? Offset((centerX + hipRegion/2) / width, hipY / height) : null;
+    return hipPixels > 3 ? Offset((centerX + hipRegion/2) / width, hipY / height) : null;
   }
   
   Offset? _detectUdder(img.Image image, int width, int height) {
     final centerX = width ~/ 2;
     final lowerRegion = height * 2 ~/ 3;
-    final udderWidth = width ~/ 4;
+    final udderWidth = width ~/ 3; // Wider search area
     
     int udderPixels = 0;
+    int pinkishPixels = 0; // Udder tissue detection
+    
     for (int y = lowerRegion; y < height; y++) {
       for (int x = centerX - udderWidth; x < centerX + udderWidth; x++) {
         if (x >= 0 && y >= 0 && x < width && y < height) {
           final pixel = image.getPixel(x, y);
-          final brightness = (pixel.r + pixel.g + pixel.b) / 3;
-          if (brightness > 30 && brightness < 120) {
+          final r = pixel.r;
+          final g = pixel.g;
+          final b = pixel.b;
+          final brightness = (r + g + b) / 3;
+          
+          // Enhanced udder detection
+          if (brightness > 20 && brightness < 130) {
             udderPixels++;
+          }
+          
+          // Pinkish/reddish tissue detection (udder characteristic)
+          if (r > 100 && g > 80 && b > 90 && r < 180 && g < 150 && b < 160) {
+            pinkishPixels++;
           }
         }
       }
     }
     
-    return udderPixels > 8 ? Offset(centerX / width, (lowerRegion + height) / 2 / height) : null;
+    final udderScore = (udderPixels + pinkishPixels) / 2;
+    debugPrint('[UDDER DETECTION] Udder pixels: $udderPixels, Pinkish: $pinkishPixels, Score: $udderScore');
+    
+    return udderScore > 8 ? Offset(centerX / width, (lowerRegion + height) / 2 / height) : null;
   }
   
   // 🔹 Step 6: Structural Validation
@@ -667,7 +1677,7 @@ class VeterinaryBuffaloDetector {
     }
     
     final udderY = (udder as Offset).dy;
-    final isValid = udderY > 0.6; // Udder should be in lower 40% of image
+    final isValid = udderY > 0.38 && udderY < 0.92;
     debugPrint('[REAR ANGLE] Udder Y: ${udderY.toStringAsFixed(3)}, Valid: $isValid');
     return isValid;
   }
@@ -687,8 +1697,8 @@ class VeterinaryBuffaloDetector {
     final rightX = (rightHip as Offset).dx;
     final hipDistance = (rightX - leftX).abs();
     
-    // Hips should be reasonably spaced (not too close, not too far)
-    final isValid = hipDistance > 0.1 && hipDistance < 0.5;
+    // Rear milk-mirror: pin bones span escutcheon (allow wide rear frame)
+    final isValid = hipDistance > 0.08 && hipDistance < 0.88;
     debugPrint('[BODY PROPORTIONS] LeftX: ${leftX.toStringAsFixed(3)}, RightX: ${rightX.toStringAsFixed(3)}, Distance: ${hipDistance.toStringAsFixed(3)}, Valid: $isValid');
     return isValid;
   }
@@ -707,16 +1717,17 @@ class VeterinaryBuffaloDetector {
       'body_condition': _assessBodyCondition(image),
       'udder_size': _assessUdderSize(image),
       'frame_size': _assessFrameSize(image),
-      'breed_estimate': _estimateBreed(image),
+      'build_quality': _assessLocalBuildQuality(image),
     };
   }
   
   String _assessBodyCondition(img.Image image) {
     int healthyPixels = 0;
-    int totalPixels = image.width * image.height;
+    int sampledPixels = 0;
     
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
+    for (int y = 0; y < image.height; y += _sampleStep) {
+      for (int x = 0; x < image.width; x += _sampleStep) {
+        sampledPixels++;
         final brightness = image.getPixel(x, y).r;
         if (brightness > 60 && brightness < 160) {
           healthyPixels++;
@@ -724,7 +1735,7 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    final ratio = healthyPixels / totalPixels;
+    final ratio = sampledPixels == 0 ? 0.0 : healthyPixels / sampledPixels;
     if (ratio > 0.6) return 'healthy';
     if (ratio > 0.4) return 'moderate';
     return 'thin';
@@ -758,10 +1769,11 @@ class VeterinaryBuffaloDetector {
   
   String _assessFrameSize(img.Image image) {
     int bodyPixels = 0;
-    int totalPixels = image.width * image.height;
+    int sampledPixels = 0;
     
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
+    for (int y = 0; y < image.height; y += _sampleStep) {
+      for (int x = 0; x < image.width; x += _sampleStep) {
+        sampledPixels++;
         final brightness = image.getPixel(x, y).r;
         if (brightness > 50 && brightness < 180) {
           bodyPixels++;
@@ -769,27 +1781,28 @@ class VeterinaryBuffaloDetector {
       }
     }
     
-    final bodyRatio = bodyPixels / totalPixels;
+    final bodyRatio = sampledPixels == 0 ? 0.0 : bodyPixels / sampledPixels;
     if (bodyRatio > 0.5) return 'large';
     if (bodyRatio > 0.3) return 'medium';
     return 'small';
   }
   
-  String _estimateBreed(img.Image image) {
-    int darkPixels = 0;
-    int totalPixels = image.width * image.height;
-    
-    for (int y = 0; y < image.height; y++) {
-      for (int x = 0; x < image.width; x++) {
+  String _assessLocalBuildQuality(img.Image image) {
+    int bodyPixels = 0;
+    int sampledPixels = 0;
+
+    for (int y = 0; y < image.height; y += _sampleStep) {
+      for (int x = 0; x < image.width; x += _sampleStep) {
+        sampledPixels++;
         final brightness = image.getPixel(x, y).r;
-        if (brightness < 80) darkPixels++;
+        if (brightness > 30 && brightness < 150) bodyPixels++;
       }
     }
-    
-    final darkRatio = darkPixels / totalPixels;
-    if (darkRatio > 0.6) return 'Murrah';
-    if (darkRatio > 0.3) return 'Local/Desi';
-    return 'Crossbreed';
+
+    final ratio = sampledPixels == 0 ? 0.0 : bodyPixels / sampledPixels;
+    if (ratio > 0.5) return 'strong';
+    if (ratio > 0.35) return 'average';
+    return 'light';
   }
   
   Map<String, dynamic> _predictMilkProduction(
@@ -800,70 +1813,84 @@ class VeterinaryBuffaloDetector {
     int daysInMilk,
     String feed,
   ) {
-    debugPrint('[MILK PREDICTION] Starting prediction...');
+    debugPrint('[MILK PREDICTION] Starting prediction (local buffalo)...');
+
+    // Model trained for local (desi) buffalo — breed param kept for API compat only.
+    const localBaseMilk = 10.0;
+    double baseMilk = localBaseMilk;
+    debugPrint('[MILK PREDICTION] Base milk (local): $baseMilk');
     
-    // Base milk production by breed
-    final breedFactors = {
-      'Murrah': 15.0,
-      'Local/Desi': 10.0,
-      'Crossbreed': 12.0,
-    };
-    
-    double baseMilk = breedFactors[breed] ?? 10.0;
-    debugPrint('[MILK PREDICTION] Base milk for $breed: $baseMilk');
-    
-    // Adjust for age
+    // Adjust for age - more conservative
     if (age < 3) {
-      baseMilk *= 0.6;
+      baseMilk *= 0.5; // Reduced from 0.6
     } else if (age >= 3 && age <= 7) {
-      baseMilk *= 1.1;
+      baseMilk *= 1.05; // Reduced from 1.1
     } else if (age > 10) {
-      baseMilk *= 0.85;
+      baseMilk *= 0.8; // Reduced from 0.85
     }
     
-    // Adjust for lactation
+    // Adjust for lactation - more conservative
     if (lactation == 1) {
-      baseMilk *= 0.9;
+      baseMilk *= 0.85; // Reduced from 0.9
     } else if (lactation >= 2 && lactation <= 4) {
-      baseMilk *= 1.2;
+      baseMilk *= 1.1; // Reduced from 1.2
     } else if (lactation >= 5) {
-      baseMilk *= 0.8;
+      baseMilk *= 0.75; // Reduced from 0.8
     }
     
-    // Adjust for days in milk
+    // Adjust for days in milk - more conservative
     if (daysInMilk < 30) {
-      baseMilk *= 0.7;
+      baseMilk *= 0.6; // Reduced from 0.7
     } else if (daysInMilk >= 30 && daysInMilk <= 120) {
-      baseMilk *= 1.3;
+      baseMilk *= 1.15; // Reduced from 1.3
     } else if (daysInMilk > 240) {
-      baseMilk *= 0.9;
+      baseMilk *= 0.85; // Reduced from 0.9
     }
     
-    // Adjust for feed
+    // Adjust for feed - more conservative
     final feedFactors = {
-      'High Protein': 1.4,
+      'High Protein': 1.25,  // Reduced from 1.4
       'Standard': 1.0,
-      'Low': 0.6,
+      'Low': 0.55,   // Reduced from 0.6
     };
     baseMilk *= feedFactors[feed] ?? 1.0;
     
-    // Adjust for visual features
+    // Adjust for visual features - breed-specific analysis
     final bodyCondition = features['body_condition'] as String;
     final udderSize = features['udder_size'] as String;
-    
+    final frameSize = features['frame_size'] as String;
+    final buildQuality = features['build_quality'] as String;
+
+    debugPrint(
+      '[MILK PREDICTION] Body: $bodyCondition, Udder: $udderSize, Frame: $frameSize, Build: $buildQuality',
+    );
+
     if (bodyCondition == 'healthy') {
       baseMilk *= 1.2;
     } else if (bodyCondition == 'thin') {
-      baseMilk *= 0.7;
+      baseMilk *= 0.6;
     }
-    
+
     if (udderSize == 'large') {
       baseMilk *= 1.3;
     } else if (udderSize == 'small') {
+      baseMilk *= 0.6;
+    }
+
+    if (frameSize == 'large') {
+      baseMilk *= 1.15;
+    } else if (frameSize == 'small') {
       baseMilk *= 0.7;
     }
+
+    if (buildQuality == 'strong') {
+      baseMilk *= 1.05;
+    } else if (buildQuality == 'light') {
+      baseMilk *= 0.9;
+    }
     
-    final predictedLiters = math.max(5.0, math.min(35.0, baseMilk));
+    // Apply cap for desi buffalo (high yielding varieties)
+    final predictedLiters = math.max(4.0, math.min(25.0, baseMilk));  // Increased max to 25.0 for desi buffalo
     debugPrint('[MILK PREDICTION] Final prediction: $predictedLiters liters/day');
     
     return {

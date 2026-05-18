@@ -1,15 +1,37 @@
 import 'dart:io';
 import 'dart:ui' as ui;
 
+import 'package:firebase_core/firebase_core.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 import 'package:image_picker/image_picker.dart';
 
-import 'screens/admin_panel_screen.dart';
+import 'firebase_options.dart';
+import 'models/dairy_pipeline_report.dart';
 import 'services/classifier_service_new.dart';
+import 'services/image_based_milk_calculator.dart';
+import 'services/inference_logger.dart';
+import 'services/milk_mirror_measurement_service.dart';
+import 'theme/app_theme.dart';
+import 'widgets/enterprise/ai_analysis_overlay.dart';
+import 'widgets/enterprise/enterprise_ai_dashboard.dart';
+import 'widgets/enterprise/enterprise_app_header.dart';
+import 'widgets/enterprise/enterprise_capture_zone.dart';
+import 'widgets/enterprise/enterprise_measurement_card.dart';
+import 'widgets/enterprise/glass_card.dart';
+import 'widgets/enterprise/responsive_layout.dart';
+import 'widgets/anatomy_overlay_layer.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint('Firebase init failed: $e');
+  }
   runApp(const ImageDetectorApp());
 }
 
@@ -20,63 +42,18 @@ class ImageFitInfo {
   ImageFitInfo({required this.size, required this.offset});
 }
 
+enum _CaptureFlowStage { capture, review, results }
+
 class ImageDetectorApp extends StatelessWidget {
   const ImageDetectorApp({super.key});
 
   @override
   Widget build(BuildContext context) {
-    final theme = ThemeData(
-      useMaterial3: true,
-      fontFamily: 'Roboto',
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: const Color(0xFF6D5EF7),
-        brightness: Brightness.dark,
-      ),
-      scaffoldBackgroundColor: const Color(0xFF090A17),
-    );
-
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Vision Trend',
-      theme: theme,
-      home: const AppShell(),
-    );
-  }
-}
-
-class AppShell extends StatefulWidget {
-  const AppShell({super.key});
-
-  @override
-  State<AppShell> createState() => _AppShellState();
-}
-
-class _AppShellState extends State<AppShell> {
-  int _currentIndex = 0;
-
-  @override
-  Widget build(BuildContext context) {
-    const pages = [DetectorHomePage(), AdminPanelScreen()];
-    return Scaffold(
-      body: pages[_currentIndex],
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _currentIndex,
-        onDestinationSelected: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
-        },
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.image_search_rounded),
-            label: 'Detector',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.admin_panel_settings_rounded),
-            label: 'Admin',
-          ),
-        ],
-      ),
+      title: 'Milk Mirror',
+      theme: AppTheme.build(),
+      home: const DetectorHomePage(),
     );
   }
 }
@@ -92,8 +69,10 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
   final _picker = ImagePicker();
   final _classifier = ClassifierService();
 
-  // --- Hybrid Model Inputs ---
-  String _selectedBreed = 'Murrah';
+  /// Model is trained for local (desi) buffalo only — not breed/race-specific.
+  static const String _localBuffaloType = 'Local/Desi';
+
+  // Debug-only hybrid model tuning (hidden in release builds).
   String _selectedFeed = 'Standard';
   int _age = 5;
   int _lactation = 1;
@@ -101,8 +80,13 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
 
   File? _pickedImage;
   PredictionResult? _prediction;
+  Map<String, dynamic>? _imageBasedResult;
+  _CaptureFlowStage _flowStage = _CaptureFlowStage.capture;
+  /// Farmer-selected health before prediction (mutually exclusive).
+  bool? _animalIsHealthy;
   bool _isLoading = false;
   bool _isModelReady = false;
+  String? _modelLoadError;
   String? _error;
 
   @override
@@ -111,228 +95,706 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     _prepareModel();
   }
 
+  String _engineLabel(String source) {
+    switch (source) {
+      case 'milk_mirror':
+        return 'Pin bones + escutcheon (A–B, C–D)';
+      case 'milk_mirror+tflite':
+        return 'Milk Mirror + AI';
+      case 'tflite':
+        return 'TFLite AI';
+      case 'tflite_untrained':
+        return 'TFLite (needs training)';
+      case 'rules_gate':
+        return 'Rules gate only';
+      default:
+        return source;
+    }
+  }
+
   Future<void> _prepareModel() async {
+    debugPrint('LOG: ═══ Initializing TFLite on app start ═══');
     final ready = await _classifier.loadModel();
+    final diag = _classifier.lastDiagnostics;
+    debugPrint(
+      'LOG: Model ready=$ready | interpreter=${_classifier.isTfliteReady}',
+    );
+    if (diag != null) {
+      debugPrint('LOG: Init proof: ${diag.proofSummary}');
+    }
     if (!mounted) {
       return;
     }
     setState(() {
       _isModelReady = ready;
+      _modelLoadError = ready ? null : _classifier.modelLoadError;
     });
   }
 
-  Future<void> _pickAndPredict(ImageSource source) async {
+  Future<void> _pickImage(ImageSource source) async {
     debugPrint('LOG: Requesting image from ${source.name}');
 
-    // Handle Windows Camera limitation
     if (Platform.isWindows && source == ImageSource.camera) {
-      debugPrint('LOG: Camera not supported on Windows via image_picker');
       if (!mounted) return;
       setState(() {
-        _error = 'Camera is not supported on Windows desktop. Please use "Gallery" to upload a buffalo photo.';
+        _error =
+            'Camera is not supported on Windows desktop. Please use "Gallery" to upload a buffalo photo.';
       });
       return;
     }
 
-    setState(() {
-      _error = null;
-    });
+    setState(() => _error = null);
 
     try {
       final image = await _picker.pickImage(source: source, imageQuality: 85);
-      if (image == null) {
-        debugPrint('LOG: Image picking cancelled');
-        return;
-      }
+      if (image == null) return;
 
       debugPrint('LOG: Image picked: ${image.path}');
-      setState(() {
-        _isLoading = true;
-        _pickedImage = File(image.path);
-        _error = null; // Clear any previous camera errors on success
-      });
-
-      debugPrint('LOG: Starting classification...');
-      final result = await _classifier.classifyImage(
-        image.path,
-        breed: _selectedBreed,
-        age: _age,
-        lactation: _lactation,
-        daysInMilk: _daysInMilk,
-        feed: _selectedFeed,
-      );
-      
       if (!mounted) return;
-      
-      debugPrint('LOG: Classification successful: ${result.label}');
       setState(() {
-        _prediction = result;
+        _pickedImage = File(image.path);
+        _prediction = null;
+        _imageBasedResult = null;
+        _flowStage = _CaptureFlowStage.review;
+        _animalIsHealthy = true;
+        _error = null;
       });
     } catch (e) {
-      debugPrint('LOG: Error during picking/classification: $e');
       if (!mounted) return;
       setState(() {
-        _error = 'Failed to open ${source.name.toLowerCase()}. Please check app permissions.';
+        _error =
+            'Failed to open ${source.name.toLowerCase()}. Please check app permissions.';
+      });
+    }
+  }
+
+  Future<void> _runPrediction() async {
+    if (_pickedImage == null || _animalIsHealthy == null) return;
+
+    setState(() {
+      _isLoading = true;
+      _error = null;
+      _prediction = null;
+      _imageBasedResult = null;
+    });
+
+    try {
+      debugPrint('LOG: Starting classification...');
+      final path = _pickedImage!.path;
+      final imageCalculator = ImageBasedMilkCalculator();
+      final params = _hybridModelParams();
+      final tasks = await Future.wait([
+        _classifier.classifyImage(
+          path,
+          breed: _localBuffaloType,
+          age: params.age,
+          lactation: params.lactation,
+          daysInMilk: params.daysInMilk,
+          feed: params.feed,
+        ),
+        imageCalculator.calculateMilkFromImage(path),
+      ]);
+      final result = tasks[0] as PredictionResult;
+      final imageBasedResult = tasks[1] as Map<String, dynamic>;
+      
+      if (!mounted) return;
+      
+      final diag = result.diagnostics;
+      debugPrint('LOG: ══════════ PREDICTION PROOF ══════════');
+      debugPrint('LOG: Source: ${result.predictionSource}');
+      debugPrint('LOG: Label shown: ${result.label}');
+      debugPrint('LOG: Milk: ${result.estimatedLiters} L/day');
+      debugPrint('LOG: Confidence: ${(result.confidence * 100).toStringAsFixed(1)}%');
+      if (diag != null) {
+        debugPrint('LOG: ${diag.proofSummary}');
+        debugPrint(
+          'LOG: TFLite ran interpreter.run: ${diag.tfliteInferenceExecuted}',
+        );
+        debugPrint('LOG: Raw class: ${diag.rawTfliteLabel}');
+        debugPrint(
+          'LOG: Timings — load ${diag.tfliteLoadMs}ms | rules ${diag.rulesGateMs}ms | infer ${diag.tfliteInferenceMs}ms',
+        );
+        for (final e in diag.tfliteAllScores.entries) {
+          debugPrint(
+            'LOG:   score ${e.key} = ${(e.value * 100).toStringAsFixed(2)}%',
+          );
+        }
+      } else {
+        debugPrint('LOG: (No TFLite diagnostics — rules/error path)');
+      }
+      debugPrint('LOG: IMAGE-BASED (separate heuristic): ${imageBasedResult['milk_per_day_liters']} L/day');
+      final imageConfidence = (imageBasedResult['confidence'] ?? 0.0) as double;
+      debugPrint('LOG: Visual score: ${(imageConfidence * 100).toStringAsFixed(1)}%');
+      debugPrint('LOG: ══════════════════════════════════════');
+      
+      setState(() {
+        _prediction = result;
+        _imageBasedResult = imageBasedResult;
+        _flowStage = _CaptureFlowStage.results;
+      });
+    } catch (e) {
+      debugPrint('LOG: Error during classification: $e');
+      if (!mounted) return;
+      setState(() {
+        _error = 'Analysis failed. Please try another photo.';
       });
     } finally {
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        setState(() => _isLoading = false);
       }
     }
+  }
+
+  void _resetToCapture() {
+    setState(() {
+      _flowStage = _CaptureFlowStage.capture;
+      _pickedImage = null;
+      _prediction = null;
+      _imageBasedResult = null;
+      _animalIsHealthy = null;
+      _error = null;
+    });
+  }
+
+  void _backToReview() {
+    setState(() {
+      _flowStage = _CaptureFlowStage.review;
+      _prediction = null;
+      _imageBasedResult = null;
+    });
+  }
+
+  DairyPipelineReport? _reportWithUserHealth(DairyPipelineReport? report) {
+    if (report == null || _animalIsHealthy == null) return report;
+    final label = _animalIsHealthy! ? 'Healthy' : 'Not healthy';
+    final steps = report.workflowSteps.map((s) {
+      if (s.index != 6) return s;
+      return PipelineStep(
+        index: s.index,
+        title: s.title,
+        subtitle: label,
+        status: _animalIsHealthy!
+            ? PipelineStepStatus.pass
+            : PipelineStepStatus.partial,
+      );
+    }).toList();
+    return report.copyWith(healthStatus: label, workflowSteps: steps);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      body: Container(
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF0D1026), Color(0xFF15123A), Color(0xFF090A17)],
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-          ),
-        ),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const Text(
-                  'Vision Trend',
-                  style: TextStyle(
-                    fontSize: 30,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  _isModelReady
-                      ? 'AI model is analyzing specific buffalo features for yield'
-                      : 'Running with demo mode (Focus on rear/udder area)',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
-                ),
-                const SizedBox(height: 12),
-                
-                // --- Buffalo Profile Section ---
-                _buildProfileForm(),
-                
-                const SizedBox(height: 20),
-                SizedBox(
-                  height: 350,
-                  child: _pickedImage == null
-                      ? _buildEmptyState()
-                      : _buildImagePreview(_pickedImage!),
-                ),
-                const SizedBox(height: 18),
-                if (_isLoading) ...[
-                  const LinearProgressIndicator(
-                    minHeight: 4,
-                    borderRadius: BorderRadius.all(Radius.circular(2)),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                if (_error != null) ...[
-                  Text(
-                    _error!,
-                    style: const TextStyle(color: Colors.redAccent),
-                  ),
-                  const SizedBox(height: 12),
-                ],
-                if (_prediction != null) ...[
-                  _buildPredictionCard(_prediction!),
-                  const SizedBox(height: 18),
-                ],
-                Row(
-                  children: [
-                    Expanded(
-                      child: FilledButton.icon(
-                        onPressed: _isLoading
-                            ? null
-                            : () => _pickAndPredict(ImageSource.camera),
-                        icon: const Icon(Icons.camera_alt_rounded),
-                        label: const Text('Camera'),
+      body: Stack(
+        children: [
+          Container(
+            height: double.infinity,
+            decoration: AppColors.backgroundDecoration,
+            child: SafeArea(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final padding = ResponsiveLayout.pagePadding(context);
+                  final isWide = ResponsiveLayout.tier(context) != ScreenTier.compact;
+
+                  return SingleChildScrollView(
+                    padding: padding,
+                    child: Align(
+                      alignment: Alignment.topCenter,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          maxWidth: ResponsiveLayout.contentMaxWidth(context),
+                        ),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            EnterpriseAppHeader(
+                      modelReady: _isModelReady,
+                      subtitle: _isModelReady
+                          ? 'AI dairy analytics · rear udder capture'
+                          : 'Booting prediction engine…',
+                    ),
+                if (!_isModelReady && _modelLoadError != null) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFFF7ED),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: const Color(0xFFFED7AA)),
+                    ),
+                    child: Text(
+                      _modelLoadError!,
+                      style: const TextStyle(
+                        color: Color(0xFF9A3412),
+                        fontSize: 12,
+                        height: 1.4,
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton.tonalIcon(
-                        onPressed: _isLoading
-                            ? null
-                            : () => _pickAndPredict(ImageSource.gallery),
-                        icon: const Icon(Icons.photo_library_rounded),
-                        label: const Text('Gallery'),
+                  ),
+                ],
+                    if (kDebugMode) ...[
+                      const SizedBox(height: 12),
+                      _buildDebugProfileForm(),
+                    ],
+                            SizedBox(height: isWide ? 14 : 12),
+                            _buildFlowStepper(isWide),
+                            SizedBox(height: isWide ? 16 : 12),
+                            if (_flowStage == _CaptureFlowStage.capture) ...[
+                              _buildCaptureSection(showOverlay: false),
+                              SizedBox(height: isWide ? 16 : 14),
+                              _buildCaptureActions(isWide),
+                            ],
+                            if (_flowStage == _CaptureFlowStage.review) ...[
+                              _buildCaptureSection(showOverlay: false),
+                              SizedBox(height: isWide ? 14 : 12),
+                              _buildReviewPanel(isWide),
+                            ],
+                            if (_flowStage == _CaptureFlowStage.results) ...[
+                              _buildCaptureSection(showOverlay: true),
+                              SizedBox(height: isWide ? 14 : 12),
+                            ],
+                    if (_error != null) ...[
+                      Text(
+                        _error!,
+                        style: const TextStyle(color: AppColors.danger),
+                      ),
+                      const SizedBox(height: 12),
+                    ],
+                    if (_flowStage == _CaptureFlowStage.results &&
+                        _prediction != null) ...[
+                      if (_prediction!.pipeline != null)
+                        EnterpriseAiDashboard(
+                          report: _reportWithUserHealth(_prediction!.pipeline!)!,
+                          sessionId: _prediction!.diagnostics?.sessionId,
+                        ),
+                      if (_prediction!.milkMirror != null) ...[
+                        const SizedBox(height: 12),
+                        EnterpriseMeasurementCard(
+                          metrics: _prediction!.milkMirror!,
+                          engineLabel: _engineLabel(_prediction!.predictionSource),
+                        ),
+                      ] else if (_prediction!.pipeline == null) ...[
+                        const SizedBox(height: 12),
+                        _buildOriginalModelCard(_prediction!),
+                      ],
+                      if (_prediction!.diagnostics != null) ...[
+                        const SizedBox(height: 12),
+                        _buildDiagnosticsExpansion(_prediction!.diagnostics!),
+                      ],
+                      const SizedBox(height: 12),
+                      _buildResultsActions(isWide),
+                    ],
+                    if (kDebugMode &&
+                        _flowStage == _CaptureFlowStage.results &&
+                        _imageBasedResult != null) ...[
+                      _buildImageBasedModelCard(_imageBasedResult!),
+                      const SizedBox(height: 18),
+                    ],
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
+          if (_isLoading)
+            AiAnalysisOverlay(
+              activeStepIndex: _flowStage == _CaptureFlowStage.review ? 2 : 3,
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildFlowStepper(bool isWide) {
+    return GlassCard(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      radius: 16,
+      child: Row(
+        children: [
+          _flowStepChip(1, 'Capture', _flowStage == _CaptureFlowStage.capture),
+          _flowConnector(),
+          _flowStepChip(2, 'Review', _flowStage == _CaptureFlowStage.review),
+          _flowConnector(),
+          _flowStepChip(3, 'Results', _flowStage == _CaptureFlowStage.results),
+        ],
+      ),
+    );
+  }
+
+  Widget _flowConnector() {
+    return Expanded(
+      child: Container(
+        height: 2,
+        margin: const EdgeInsets.symmetric(horizontal: 6),
+        color: AppColors.border,
+      ),
+    );
+  }
+
+  Widget _flowStepChip(int step, String label, bool active) {
+    return Column(
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: active ? AppColors.primary : AppColors.primarySoft,
+            shape: BoxShape.circle,
+          ),
+          child: Text(
+            '$step',
+            style: TextStyle(
+              color: active ? Colors.white : AppColors.primary,
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+            ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: active ? FontWeight.w800 : FontWeight.w500,
+            color: active ? AppColors.primary : AppColors.textSecondary,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildReviewPanel(bool isWide) {
+    final canProceed = _animalIsHealthy != null && !_isLoading && _isModelReady;
+
+    return GlassCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Text(
+            'Uploaded photo',
+            style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+            'Confirm animal health, then proceed to AI analysis.',
+            style: TextStyle(color: AppColors.textSecondary, fontSize: 12),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Animal health',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          ),
+          const SizedBox(height: 8),
+          _healthCheckbox(
+            label: 'Healthy',
+            subtitle: 'Normal condition, fit for milking assessment',
+            selected: _animalIsHealthy == true,
+            onSelect: () => setState(() => _animalIsHealthy = true),
+          ),
+          const SizedBox(height: 6),
+          _healthCheckbox(
+            label: 'Not healthy',
+            subtitle: 'Visible illness, injury, or poor condition',
+            selected: _animalIsHealthy == false,
+            onSelect: () => setState(() => _animalIsHealthy = false),
+          ),
+          SizedBox(height: isWide ? 20 : 16),
+          if (isWide)
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    onPressed: _isLoading ? null : _resetToCapture,
+                    icon: const Icon(Icons.arrow_back_rounded),
+                    label: const Text('Change photo'),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: FilledButton.icon(
+                    onPressed: canProceed ? _runPrediction : null,
+                    icon: const Icon(Icons.arrow_forward_rounded),
+                    label: const Text('Proceed'),
+                  ),
+                ),
+              ],
+            )
+          else ...[
+            FilledButton.icon(
+              onPressed: canProceed ? _runPrediction : null,
+              icon: const Icon(Icons.arrow_forward_rounded),
+              label: const Text('Proceed'),
+            ),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              onPressed: _isLoading ? null : _resetToCapture,
+              icon: const Icon(Icons.arrow_back_rounded),
+              label: const Text('Change photo'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _healthCheckbox({
+    required String label,
+    required String subtitle,
+    required bool selected,
+    required VoidCallback onSelect,
+  }) {
+    return Material(
+      color: selected ? AppColors.primarySoft : AppColors.surface,
+      borderRadius: BorderRadius.circular(12),
+      child: InkWell(
+        onTap: onSelect,
+        borderRadius: BorderRadius.circular(12),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: selected ? AppColors.primary : AppColors.border,
+              width: selected ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            children: [
+              Checkbox(
+                value: selected,
+                onChanged: (_) => onSelect(),
+                activeColor: AppColors.primary,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(4),
+                ),
+              ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      label,
+                      style: TextStyle(
+                        fontWeight: FontWeight.w700,
+                        color: selected
+                            ? AppColors.primary
+                            : AppColors.textPrimary,
+                      ),
+                    ),
+                    Text(
+                      subtitle,
+                      style: const TextStyle(
+                        fontSize: 11,
+                        color: AppColors.textSecondary,
                       ),
                     ),
                   ],
                 ),
-              ],
-            ),
+              ),
+            ],
           ),
         ),
       ),
     );
   }
 
-  Widget _buildProfileForm() {
+  Widget _buildResultsActions(bool isWide) {
+    if (isWide) {
+      return Row(
+        children: [
+          Expanded(
+            child: OutlinedButton.icon(
+              onPressed: _isLoading ? null : _backToReview,
+              icon: const Icon(Icons.edit_note_rounded),
+              label: const Text('Edit health & retry'),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: FilledButton.icon(
+              onPressed: _isLoading ? null : _resetToCapture,
+              icon: const Icon(Icons.add_a_photo_rounded),
+              label: const Text('New photo'),
+            ),
+          ),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        OutlinedButton.icon(
+          onPressed: _isLoading ? null : _backToReview,
+          icon: const Icon(Icons.edit_note_rounded),
+          label: const Text('Edit health & retry'),
+        ),
+        const SizedBox(height: 10),
+        FilledButton.icon(
+          onPressed: _isLoading ? null : _resetToCapture,
+          icon: const Icon(Icons.add_a_photo_rounded),
+          label: const Text('New photo'),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCaptureActions(bool isWide) {
+    final camera = FilledButton.icon(
+      onPressed: _isLoading || !_isModelReady
+          ? null
+          : () => _pickImage(ImageSource.camera),
+      icon: const Icon(Icons.camera_alt_rounded),
+      label: const Text('Camera'),
+    );
+    final gallery = OutlinedButton.icon(
+      onPressed: _isLoading || !_isModelReady
+          ? null
+          : () => _pickImage(ImageSource.gallery),
+      icon: const Icon(Icons.photo_library_rounded),
+      label: const Text('Gallery'),
+    );
+
+    if (isWide) {
+      return Row(
+        children: [
+          Expanded(child: camera),
+          const SizedBox(width: 12),
+          Expanded(child: gallery),
+        ],
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        camera,
+        const SizedBox(height: 10),
+        gallery,
+      ],
+    );
+  }
+
+  Widget _buildCaptureSection({required bool showOverlay}) {
+    final overlay = showOverlay &&
+            _pickedImage != null &&
+            _prediction != null &&
+            _prediction!.milkMirror != null
+        ? AnatomyOverlayLayer(
+            imageFile: _pickedImage!,
+            metrics: _prediction!.milkMirror,
+            fallbackKeypoints: _prediction!.keypoints,
+          )
+        : null;
+
+    return EnterpriseCaptureZone(
+      image: _pickedImage,
+      modelReady: _isModelReady,
+      overlay: overlay,
+    );
+  }
+
+  Widget _buildDiagnosticsExpansion(InferenceDiagnostics d) {
+    return GlassCard(
+      padding: EdgeInsets.zero,
+      radius: 20,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          tilePadding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+          title: const Text(
+            'Inference proof',
+            style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+          ),
+          subtitle: Text(
+            d.proofSummary,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(fontSize: 11, color: AppColors.textSecondary),
+          ),
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(18, 0, 18, 16),
+              child: _buildInferenceProofCard(d, milkMirror: _prediction?.milkMirror),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Production uses typical local-buffalo defaults; debug UI can override.
+  _HybridModelParams _hybridModelParams() {
+    if (kDebugMode) {
+      return _HybridModelParams(
+        feed: _selectedFeed,
+        age: _age,
+        lactation: _lactation,
+        daysInMilk: _daysInMilk,
+      );
+    }
+    return const _HybridModelParams(
+      feed: 'Standard',
+      age: 5,
+      lactation: 2,
+      daysInMilk: 60,
+    );
+  }
+
+  Widget _buildDebugProfileForm() {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.05),
+        color: const Color(0xFFFFF7ED),
         borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.white10),
+        border: Border.all(color: const Color(0xFFFDBA74)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const Text(
-            'BUFFALO PROFILE',
-            style: TextStyle(
-              color: Color(0xFF6D5EF7),
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.2,
-            ),
-          ),
-          const SizedBox(height: 12),
           Row(
             children: [
-              Expanded(
-                child: _buildDropdown(
-                  'Breed',
-                  _selectedBreed,
-                  ['Murrah', 'Jaffrabadi', 'Nili-Ravi', 'Local/Desi'],
-                  (val) => setState(() => _selectedBreed = val!),
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _buildDropdown(
-                  'Feed Quality',
-                  _selectedFeed,
-                  ['High Protein', 'Standard', 'Low'],
-                  (val) => setState(() => _selectedFeed = val!),
+              Icon(Icons.bug_report, size: 16, color: Colors.orange.shade800),
+              const SizedBox(width: 6),
+              Text(
+                'DEBUG — hybrid model inputs',
+                style: TextStyle(
+                  color: Colors.orange.shade900,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.5,
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 4),
+          Text(
+            'Local buffalo only ($_localBuffaloType). Hidden in production.',
+            style: const TextStyle(color: Color(0xFF9A3412), fontSize: 11),
+          ),
+          const SizedBox(height: 12),
+          _buildDropdown(
+            'Feed quality',
+            _selectedFeed,
+            ['High Protein', 'Standard', 'Low'],
+            (val) => setState(() => _selectedFeed = val!),
+          ),
           const SizedBox(height: 12),
           Row(
             children: [
               Expanded(
-                child: _buildNumberInput('Age (Yrs)', _age, (val) => setState(() => _age = val)),
+                child: _buildNumberInput('Age (yrs)', _age, (val) => setState(() => _age = val)),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: _buildNumberInput('Lactation', _lactation, (val) => setState(() => _lactation = val)),
+                child: _buildNumberInput('Lactation #', _lactation, (val) => setState(() => _lactation = val)),
               ),
               const SizedBox(width: 8),
               Expanded(
-                child: _buildNumberInput('Days in Milk', _daysInMilk, (val) => setState(() => _daysInMilk = val)),
+                child: _buildNumberInput('Days in milk', _daysInMilk, (val) => setState(() => _daysInMilk = val)),
               ),
             ],
           ),
@@ -345,20 +807,20 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        Text(label, style: const TextStyle(color: Color(0xFF6B7280), fontSize: 11)),
         const SizedBox(height: 4),
         DropdownButtonFormField<String>(
           // Use initialValue if available in latest Flutter, or value if controlled
           value: value,
           onChanged: onChanged,
           isExpanded: true,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
+          style: const TextStyle(color: Color(0xFF111827), fontSize: 13),
           decoration: const InputDecoration(
             contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             isDense: true,
             border: OutlineInputBorder(),
           ),
-          dropdownColor: const Color(0xFF15123A),
+          dropdownColor: const Color(0xFFFFFFFF),
           items: items.map((e) => DropdownMenuItem(value: e, child: Text(e))).toList(),
         ),
       ],
@@ -366,16 +828,15 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
   }
 
   Widget _buildNumberInput(String label, int value, ValueChanged<int> onChanged) {
-    final controller = TextEditingController(text: value.toString());
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: const TextStyle(color: Colors.white54, fontSize: 11)),
+        Text(label, style: const TextStyle(color: Color(0xFF6B7280), fontSize: 11)),
         const SizedBox(height: 4),
         TextFormField(
-          controller: controller,
+          initialValue: value.toString(),
           keyboardType: TextInputType.number,
-          style: const TextStyle(color: Colors.white, fontSize: 13),
+          style: const TextStyle(color: Color(0xFF111827), fontSize: 13),
           decoration: const InputDecoration(
             contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
             isDense: true,
@@ -395,7 +856,8 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       width: double.infinity,
       decoration: BoxDecoration(
         borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: Colors.white24),
+        border: Border.all(color: const Color(0xFFD1D5DB)),
+        color: const Color(0xFFFFFFFF),
       ),
       child: const Center(
         child: Padding(
@@ -403,12 +865,12 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.image_search_rounded, color: Colors.white70, size: 48),
+              Icon(Icons.image_search_rounded, color: Color(0xFF6B7280), size: 48),
               SizedBox(height: 12),
               Text(
                 'Capture or upload an image to start recognition',
                 textAlign: TextAlign.center,
-                style: TextStyle(color: Colors.white70, fontSize: 16),
+                style: TextStyle(color: Color(0xFF6B7280), fontSize: 16),
               ),
             ],
           ),
@@ -423,9 +885,9 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       child: Container(
         constraints: const BoxConstraints(maxHeight: 400),
         decoration: BoxDecoration(
-          color: const Color(0xFF090A17),
+          color: const Color(0xFFFFFFFF),
           borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: Colors.white10, width: 1),
+          border: Border.all(color: const Color(0xFFE5E7EB), width: 1),
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(28),
@@ -450,7 +912,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                   Positioned.fill(
                     child: Container(
                       decoration: BoxDecoration(
-                        color: Colors.black.withValues(alpha: 0.3),
+                        color: Colors.white.withValues(alpha: 0.12),
                       ),
                     ),
                   ),
@@ -543,6 +1005,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
             child: CustomPaint(
               painter: AnatomicalPainter(
                 keypoints: _prediction!.keypoints,
+                milkMirror: _prediction!.milkMirror,
               ),
             ),
           ),
@@ -611,8 +1074,371 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
-  Widget _buildPredictionCard(PredictionResult prediction) {
-    bool isInvalid = prediction.label == 'No Buffalo Detected';
+  Widget _buildMilkMirrorAnalysisCard(PredictionResult prediction) {
+    final m = prediction.milkMirror!;
+    final liters = prediction.estimatedLiters;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFFFFF), Color(0xFFF0FDF9)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+        border: Border.all(color: const Color(0xFF6EE7B7)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(Icons.straighten_rounded, color: Color(0xFF059669), size: 22),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Milk Mirror Analysis',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Color(0xFF065F46),
+                      ),
+                    ),
+                    Text(
+                      'AI-powered dairy insights · ${_engineLabel(prediction.predictionSource)}',
+                      style: const TextStyle(fontSize: 11, color: Color(0xFF6B7280)),
+                    ),
+                  ],
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF10B981).withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  'MEASURED',
+                  style: TextStyle(
+                    color: Color(0xFF047857),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Center(
+            child: Column(
+              children: [
+                Text(
+                  m.rangeLabel.toUpperCase(),
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(
+                    fontSize: 22,
+                    fontWeight: FontWeight.w800,
+                    color: Color(0xFF111827),
+                    letterSpacing: 0.5,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Center estimate: ${liters.toStringAsFixed(1)} L/day',
+                  style: const TextStyle(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: Color(0xFF059669),
+                  ),
+                ),
+                Text(
+                  'Confidence: ${(m.confidence * 100).toStringAsFixed(1)}%',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: m.confidence >= 0.6 ? const Color(0xFF059669) : const Color(0xFFD97706),
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          const Text(
+            'Escutcheon measurements',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF374151)),
+          ),
+          const SizedBox(height: 8),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF9FAFB),
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+            ),
+            child: Column(
+              children: [
+                _buildModernCalculationRow(
+                  'Height (A → B)',
+                  '${(m.heightNorm * 100).toStringAsFixed(1)}% of frame',
+                  Icons.height,
+                ),
+                _buildModernCalculationRow(
+                  'Width (C → D)',
+                  '${(m.widthNorm * 100).toStringAsFixed(1)}% of frame',
+                  Icons.swap_horiz,
+                ),
+                _buildModernCalculationRow(
+                  'Area (H × W)',
+                  '${(m.areaNorm * 100).toStringAsFixed(1)}%',
+                  Icons.crop_square,
+                ),
+                _buildModernCalculationRow(
+                  'Symmetry index',
+                  '${m.symmetryPercent.toStringAsFixed(1)}% balanced',
+                  Icons.balance,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          const Text(
+            'Key features extracted',
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: Color(0xFF374151)),
+          ),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _featureChip('Area', '${(m.areaNorm * 100).toStringAsFixed(0)}%'),
+              _featureChip('Symmetry', '${m.symmetryPercent.toStringAsFixed(0)}%'),
+              _featureChip('Fullness', '${(m.udderFullness * 100).toStringAsFixed(0)}%'),
+              _featureChip('Texture', '${(m.textureScore * 100).toStringAsFixed(0)}%'),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF5F3FF),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: const Color(0xFFDDD6FE)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.memory, size: 18, color: Color(0xFF6D5EF7)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    'AI cross-check: ${m.litersPerDay.toStringAsFixed(1)} L/day '
+                    '(${(m.tfliteConfidence * 100).toStringAsFixed(0)}% match)',
+                    style: const TextStyle(fontSize: 12, color: Color(0xFF4C1D95)),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          _buildWorkflowSteps(prediction),
+          const SizedBox(height: 14),
+          Container(
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF9FAFB),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Column(
+              children: [
+                _buildModernCalculationRow(
+                  'Daily revenue',
+                  '₹${(liters * 60).toStringAsFixed(0)}',
+                  Icons.payments_outlined,
+                ),
+                _buildModernCalculationRow(
+                  'Monthly revenue',
+                  '₹${(liters * 30 * 60).toStringAsFixed(0)}',
+                  Icons.account_balance_wallet_outlined,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          const Text(
+            '* Pin bones (C/D) and udder (B) on photo — see overlay. '
+            'Production scale 1–30 L/day from escutcheon + on-device AI.',
+            style: TextStyle(color: Color(0xFF6B7280), fontSize: 10, fontStyle: FontStyle.italic),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _featureChip(String label, String value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: const Color(0xFFECFDF5),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: const Color(0xFFA7F3D0)),
+      ),
+      child: Text(
+        '$label: $value',
+        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF065F46)),
+      ),
+    );
+  }
+
+  Widget _buildWorkflowSteps(PredictionResult prediction) {
+    final steps = [
+      ('Rules gate', true),
+      ('Pin bones detected', prediction.keypoints.length >= 3),
+      ('Escutcheon measured', prediction.milkMirror != null),
+      ('TFLite ran', prediction.diagnostics?.tfliteInferenceExecuted ?? false),
+    ];
+    return Wrap(
+      spacing: 6,
+      runSpacing: 6,
+      children: steps
+          .map(
+            (s) => Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: s.$2 ? const Color(0xFFD1FAE5) : const Color(0xFFFEE2E2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    s.$2 ? Icons.check_circle : Icons.cancel,
+                    size: 14,
+                    color: s.$2 ? const Color(0xFF059669) : const Color(0xFFDC2626),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    s.$1,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      color: s.$2 ? const Color(0xFF065F46) : const Color(0xFF991B1B),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          )
+          .toList(),
+    );
+  }
+
+  Widget _buildInferenceProofCard(
+    InferenceDiagnostics diag, {
+    MilkMirrorUiMetrics? milkMirror,
+  }) {
+    final ran = diag.tfliteInferenceExecuted;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF0FDF4),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF86EFAC)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                ran ? Icons.verified_outlined : Icons.info_outline,
+                size: 18,
+                color: ran ? const Color(0xFF15803D) : const Color(0xFF9A3412),
+              ),
+              const SizedBox(width: 8),
+              const Text(
+                'Inference proof (see Debug Console)',
+                style: TextStyle(
+                  fontWeight: FontWeight.w700,
+                  fontSize: 13,
+                  color: Color(0xFF14532D),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          _proofRow('Session', diag.sessionId),
+          _proofRow('Predicted by', diag.predictionSource.toUpperCase()),
+          _proofRow('TFLite loaded', '${diag.tfliteModelLoaded}'),
+          _proofRow('Interpreter', '${diag.tfliteInterpreterAllocated}'),
+          _proofRow('interpreter.run()', '${diag.tfliteInferenceExecuted}'),
+          _proofRow('Rules gate', diag.rulesGatePassed ? 'PASS' : 'FAIL'),
+          if (milkMirror != null) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'Milk Mirror (UI):',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: Color(0xFF14532D)),
+            ),
+            _proofRow('Height A→B', '${(milkMirror.heightNorm * 100).toStringAsFixed(1)}%'),
+            _proofRow('Width C→D', '${(milkMirror.widthNorm * 100).toStringAsFixed(1)}%'),
+            _proofRow('Area', '${(milkMirror.areaNorm * 100).toStringAsFixed(1)}%'),
+            _proofRow('Liters (measured)', milkMirror.litersPerDay.toStringAsFixed(1)),
+          ],
+          if (diag.rawTfliteLabel.isNotEmpty)
+            _proofRow('TFLite class', diag.rawTfliteLabel),
+          if (diag.tfliteAllScores.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            const Text(
+              'All class scores:',
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+            ),
+            ...diag.tfliteAllScores.entries.map(
+              (e) => Text(
+                '  ${e.key}: ${(e.value * 100).toStringAsFixed(2)}%',
+                style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _proofRow(String key, String value) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Text(
+        '$key: $value',
+        style: const TextStyle(fontSize: 11, color: Color(0xFF166534)),
+      ),
+    );
+  }
+
+  Widget _buildOriginalModelCard(PredictionResult prediction) {
+    final isInvalid = prediction.label == 'No Buffalo Detected' ||
+        prediction.label == 'AI Model Not Loaded' ||
+        prediction.label == 'Detection Error';
+    final isUntrainedTflite = !isInvalid &&
+        prediction.predictionSource == 'tflite' &&
+        prediction.confidence < 0.25;
     double liters = prediction.estimatedLiters;
     
     return Container(
@@ -621,20 +1447,20 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       decoration: BoxDecoration(
         gradient: LinearGradient(
           colors: isInvalid 
-            ? [const Color(0xFF401E1E), const Color(0xFF301515)] // Red for error
-            : [const Color(0xFF1E1E40), const Color(0xFF151530)], // Blue for success
+            ? [const Color(0xFFFFF1F2), const Color(0xFFFFF7F7)]
+            : [const Color(0xFFFFFFFF), const Color(0xFFF7F8FF)],
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
         ),
         borderRadius: BorderRadius.circular(22),
         boxShadow: [
           BoxShadow(
-            color: Colors.black.withValues(alpha: 0.3),
+            color: Colors.black.withValues(alpha: 0.06),
             blurRadius: 12,
             offset: const Offset(0, 6),
           ),
         ],
-        border: Border.all(color: Colors.white.withValues(alpha: 0.08)),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -654,6 +1480,24 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                 ),
               ),
               const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF6D5EF7).withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Text(
+                  prediction.predictionSource.startsWith('milk_mirror')
+                      ? 'MILK MIRROR MEASUREMENT'
+                      : 'AI MODEL (TFLite)',
+                  style: const TextStyle(
+                    color: Color(0xFF6D5EF7),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -661,12 +1505,12 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                     Text(
                       prediction.label,
                       style: TextStyle(
-                        color: isInvalid ? Colors.redAccent : Colors.white,
+                        color: isInvalid ? Colors.redAccent : const Color(0xFF111827),
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    if (!isInvalid)
+                    if (!isInvalid) ...[
                       Text(
                         'Confidence: ${(prediction.confidence * 100).toStringAsFixed(1)}%',
                         style: TextStyle(
@@ -675,6 +1519,14 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
+                      Text(
+                        'Engine: ${_engineLabel(prediction.predictionSource)}',
+                        style: const TextStyle(
+                          color: Color(0xFF6B7280),
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -697,28 +1549,47 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                 ),
             ],
           ),
+          if (isUntrainedTflite) ...[
+            const SizedBox(height: 12),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFFFFF7ED),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFFFDBA74)),
+              ),
+              child: const Text(
+                'This TFLite file is not trained on your buffalo photos yet. '
+                'The app always picks a class label, but 0% scores mean the model '
+                'cannot distinguish 6–10 L bands. Train with training/train_model.py '
+                'using images like your 10 L/day buffalo.',
+                style: TextStyle(color: Color(0xFF9A3412), fontSize: 12, height: 1.4),
+              ),
+            ),
+          ],
           const SizedBox(height: 20),
           if (isInvalid)
             Padding(
               padding: const EdgeInsets.symmetric(vertical: 8),
               child: Text(
                 prediction.hashtags.first,
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
+                style: const TextStyle(color: Color(0xFF6B7280), fontSize: 14),
               ),
             )
           else
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.2),
+                color: const Color(0xFFF9FAFB),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Column(
                 children: [
-                  _buildModernCalculationRow('Hybrid Prediction', '${liters.toStringAsFixed(1)} Liters', Icons.opacity),
+                  _buildModernCalculationRow('Estimated yield', '${liters.toStringAsFixed(1)} L/day', Icons.opacity),
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Divider(color: Colors.white10, height: 1),
+                    child: Divider(color: Color(0xFFE5E7EB), height: 1),
                   ),
                   _buildModernCalculationRow('Daily Revenue', '₹${(liters * 60).toStringAsFixed(0)}', Icons.payments_outlined),
                   _buildModernCalculationRow('Monthly Revenue', '₹${(liters * 30 * 60).toStringAsFixed(0)}', Icons.account_balance_wallet_outlined),
@@ -727,9 +1598,137 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
             ),
           const SizedBox(height: 12),
           Text(
-            isInvalid ? '* System could not identify buffalo features' : '* Based on Hybrid AI Model (Physical + Biological Data)',
+            isInvalid
+                ? '* Could not identify buffalo from this photo'
+                : kDebugMode
+                    ? '* Local buffalo — hybrid model with debug inputs above'
+                    : '* Local buffalo — estimate from photo only',
             style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.3),
+              color: const Color(0xFF6B7280),
+              fontSize: 10,
+              fontStyle: FontStyle.italic,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildImageBasedModelCard(Map<String, dynamic> result) {
+    final milk = result['milk_per_day_liters'] as double;
+    final confidence = result['confidence'] as double;
+    final analysis = result['analysis'] as Map<String, dynamic>;
+    
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFFFFFFFF), Color(0xFFF4FFF6)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 12,
+            offset: const Offset(0, 6),
+          ),
+        ],
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4CAF50).withValues(alpha: 0.15),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: const Icon(
+                  Icons.visibility_rounded, 
+                  color: Color(0xFF4CAF50), 
+                  size: 20
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF4CAF50).withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: const Text(
+                  'IMAGE-BASED MODEL',
+                  style: TextStyle(
+                    color: Color(0xFF4CAF50),
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Visual Analysis Complete',
+                      style: TextStyle(
+                        color: const Color(0xFF111827),
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    Text(
+                      'Based on image features',
+                      style: TextStyle(
+                        color: const Color(0xFF6B7280),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: const Color(0xFFF9FAFB),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: const Color(0xFFE5E7EB)),
+            ),
+            child: Column(
+              children: [
+                _buildModernCalculationRow('Visual Prediction', '${milk.toStringAsFixed(1)} Liters', Icons.visibility),
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Divider(color: Color(0xFFE5E7EB), height: 1),
+                ),
+                _buildModernCalculationRow('Visual Score', '${(confidence * 100).toStringAsFixed(1)}%', Icons.remove_red_eye),
+                _buildModernCalculationRow('Udder size', '${analysis['udder_size']}', Icons.pets),
+                _buildModernCalculationRow('Body condition', '${analysis['body_condition']}', Icons.fitness_center),
+                _buildModernCalculationRow('Frame size', '${analysis['size_category']}', Icons.straighten),
+                if (kDebugMode)
+                  _buildModernCalculationRow(
+                    'Build score (debug)',
+                    '${((analysis['build_score'] as num?) ?? 0).toStringAsFixed(2)}',
+                    Icons.bug_report,
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            '* Based on Visual AI Model (Image Analysis)',
+            style: TextStyle(
+              color: const Color(0xFF6B7280),
               fontSize: 10,
               fontStyle: FontStyle.italic,
             ),
@@ -744,14 +1743,14 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          Icon(icon, size: 16, color: Colors.white38),
+          Icon(icon, size: 16, color: const Color(0xFF9CA3AF)),
           const SizedBox(width: 8),
-          Text(label, style: const TextStyle(color: Colors.white60, fontSize: 13)),
+          Text(label, style: const TextStyle(color: Color(0xFF6B7280), fontSize: 13)),
           const Spacer(),
           Text(
             value,
             style: const TextStyle(
-              color: Colors.white,
+              color: Color(0xFF111827),
               fontWeight: FontWeight.bold,
               fontSize: 14,
             ),
@@ -764,75 +1763,74 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
 
 class AnatomicalPainter extends CustomPainter {
   final List<Offset> keypoints;
+  final MilkMirrorUiMetrics? milkMirror;
 
-  AnatomicalPainter({required this.keypoints});
+  AnatomicalPainter({required this.keypoints, this.milkMirror});
+
+  Offset _pt(Offset n, Size size) => Offset(n.dx * size.width, n.dy * size.height);
 
   @override
   void paint(Canvas canvas, Size size) {
-    if (keypoints.length < 4) return;
+    if (keypoints.length < 3) return;
 
-    // Clip drawing to the canvas area (image boundaries)
     canvas.clipRect(ui.Rect.fromLTRB(0.0, 0.0, size.width, size.height));
+
+    final escutcheonPaint = Paint()
+      ..color = const Color(0xFFFFD54F)
+      ..strokeWidth = 2.5
+      ..style = PaintingStyle.stroke;
 
     final linePaint = Paint()
       ..color = Colors.greenAccent
       ..strokeWidth = 3
       ..style = PaintingStyle.stroke;
 
-    final squarePaint = Paint()
-      ..color = Colors.greenAccent.withValues(alpha: 0.1)
+    final fillPaint = Paint()
+      ..color = const Color(0xFF10B981).withValues(alpha: 0.12)
       ..style = PaintingStyle.fill;
 
-    // Map normalized points to canvas size
-    final leftPin = Offset(keypoints[0].dx * size.width, keypoints[0].dy * size.height);
-    final rightPin = Offset(keypoints[1].dx * size.width, keypoints[1].dy * size.height);
-    final udder = Offset(keypoints[2].dx * size.width, keypoints[2].dy * size.height);
-    final spine = Offset(keypoints[3].dx * size.width, keypoints[3].dy * size.height);
+    final leftPin = _pt(keypoints[0], size);
+    final rightPin = _pt(keypoints[1], size);
+    final udder = _pt(keypoints[2], size);
+    final spine = keypoints.length > 3 ? _pt(keypoints[3], size) : Offset((leftPin.dx + rightPin.dx) / 2, leftPin.dy - 40);
 
-    // Calculate measurement square based on pin bones and udder
-    // The square should connect the pin bones and extend to the udder area
-    final squareWidth = (rightPin.dx - leftPin.dx).abs();
-    final squareHeight = squareWidth; // Make it a perfect square
-    final squareTop = leftPin.dy;
-    final squareLeft = leftPin.dx;
-    
-    // Define the four corners of the measurement square
-    final topLeft = Offset(squareLeft, squareTop);
-    final topRight = Offset(squareLeft + squareWidth, squareTop);
-    final bottomLeft = Offset(squareLeft, squareTop + squareHeight);
-    final bottomRight = Offset(squareLeft + squareWidth, squareTop + squareHeight);
+    final m = milkMirror;
+    final pointA = m?.pointA != null ? _pt(m!.pointA!, size) : spine;
+    final pointB = m?.pointB != null ? _pt(m!.pointB!, size) : udder;
+    final pointC = m?.pointC != null ? _pt(m!.pointC!, size) : Offset(leftPin.dx, (leftPin.dy + udder.dy) / 2);
+    final pointD = m?.pointD != null ? _pt(m!.pointD!, size) : Offset(rightPin.dx, (rightPin.dy + udder.dy) / 2);
 
-    // Draw the measurement square (filled with transparent color)
-    final squarePath = Path()
-      ..addRect(ui.Rect.fromLTRB(topLeft.dx, topLeft.dy, bottomRight.dx, bottomRight.dy));
-    canvas.drawPath(squarePath, squarePaint);
+    // Escutcheon region (master diagram)
+    final escutcheonRect = ui.Rect.fromPoints(
+      Offset(pointC.dx, pointA.dy),
+      Offset(pointD.dx, pointB.dy),
+    );
+    canvas.drawRect(escutcheonRect, fillPaint);
+    canvas.drawRect(escutcheonRect, escutcheonPaint);
 
-    // Draw the square outline
-    canvas.drawRect(ui.Rect.fromLTRB(topLeft.dx, topLeft.dy, bottomRight.dx, bottomRight.dy), linePaint);
+    // Height A–B on spine (midpoint of pin row)
+    final spineX = (pointC.dx + pointD.dx) / 2;
+    canvas.drawLine(
+      Offset(spineX, pointA.dy),
+      Offset(spineX, pointB.dy),
+      escutcheonPaint,
+    );
+    // Width C–D (horizontal)
+    canvas.drawLine(pointC, pointD, escutcheonPaint);
 
-    // Draw connecting lines from spine to pin bones
     canvas.drawLine(spine, leftPin, linePaint);
     canvas.drawLine(spine, rightPin, linePaint);
-
-    // Draw lines from pin bones to udder (measurement lines)
     canvas.drawLine(leftPin, udder, linePaint);
     canvas.drawLine(rightPin, udder, linePaint);
 
-    // Draw measurement diagonals for accuracy
-    final diagonalPaint = Paint()
-      ..color = Colors.greenAccent.withValues(alpha: 0.5)
-      ..strokeWidth = 1
-      ..style = PaintingStyle.stroke;
-    
-    canvas.drawLine(topLeft, bottomRight, diagonalPaint);
-    canvas.drawLine(topRight, bottomLeft, diagonalPaint);
-
-    // Draw the anatomical points with larger, more visible markers
     final anatomicalPoints = [
+      {'point': pointA, 'label': 'A', 'color': const Color(0xFFFFD54F)},
+      {'point': pointB, 'label': 'B', 'color': const Color(0xFFFFD54F)},
+      {'point': pointC, 'label': 'C', 'color': const Color(0xFFFFD54F)},
+      {'point': pointD, 'label': 'D', 'color': const Color(0xFFFFD54F)},
       {'point': leftPin, 'label': 'L Pin', 'color': Colors.redAccent},
       {'point': rightPin, 'label': 'R Pin', 'color': Colors.redAccent},
       {'point': udder, 'label': 'Udder', 'color': Colors.blueAccent},
-      {'point': spine, 'label': 'Spine', 'color': Colors.yellowAccent},
     ];
 
     for (var item in anatomicalPoints) {
@@ -864,27 +1862,46 @@ class AnatomicalPainter extends CustomPainter {
       textPainter.paint(canvas, Offset(point.dx - textPainter.width / 2, point.dy - 20));
     }
 
-    // Draw measurement info
-    final measurementText = 'Square: ${squareWidth.toStringAsFixed(0)}px';
-    final measurementPainter = TextPainter(
-      text: TextSpan(
-        text: measurementText,
-        style: const TextStyle(
-          color: Colors.greenAccent,
-          fontSize: 12,
-          fontWeight: FontWeight.bold,
-          shadows: [Shadow(blurRadius: 3, color: Colors.black)],
+    if (m != null) {
+      final measurementText =
+          'H: ${(m.heightNorm * 100).toStringAsFixed(0)}%  W: ${(m.widthNorm * 100).toStringAsFixed(0)}%';
+      final measurementPainter = TextPainter(
+        text: TextSpan(
+          text: measurementText,
+          style: const TextStyle(
+            color: Color(0xFFFFD54F),
+            fontSize: 11,
+            fontWeight: FontWeight.bold,
+            shadows: [Shadow(blurRadius: 3, color: Colors.black)],
+          ),
         ),
-      ),
-      textDirection: TextDirection.ltr,
-    );
-    measurementPainter.layout();
-    measurementPainter.paint(canvas, Offset(
-      topLeft.dx + 10,
-      topLeft.dy + 10,
-    ));
+        textDirection: TextDirection.ltr,
+      );
+      measurementPainter.layout();
+      measurementPainter.paint(
+        canvas,
+        Offset(escutcheonRect.left + 4, escutcheonRect.top + 4),
+      );
+    }
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant AnatomicalPainter oldDelegate) {
+    return oldDelegate.keypoints != keypoints ||
+        oldDelegate.milkMirror != milkMirror;
+  }
+}
+
+class _HybridModelParams {
+  const _HybridModelParams({
+    required this.feed,
+    required this.age,
+    required this.lactation,
+    required this.daysInMilk,
+  });
+
+  final String feed;
+  final int age;
+  final int lactation;
+  final int daysInMilk;
 }

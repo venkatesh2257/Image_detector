@@ -1,0 +1,15 @@
+{
+  "trained": true,
+  "trained_at": "2026-05-17T15:06:22.319634+00:00",
+  "val_accuracy": 0.3571,
+  "val_loss": 1.6003,
+  "classes": [
+    "6_lit",
+    "7_lit",
+    "8_lit",
+    "9_lit",
+    "10_lit"
+  ],
+  "train_images": 60,
+  "val_images": 14
+}
