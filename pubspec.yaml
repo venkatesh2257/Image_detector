@@ -37,6 +37,7 @@ dependencies:
   image: ^4.5.4
   firebase_core: ^4.0.0
   cloud_firestore: ^6.0.0
+  shared_preferences: ^2.5.3
   google_fonts: ^6.2.1
   flutter_animate: ^4.5.2
   flutter_svg: ^2.0.17
@@ -45,6 +46,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  firebase_core_platform_interface: ^6.0.3
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -69,6 +71,7 @@ flutter:
     - assets/model/milk_mirror_calibration.json
     - assets/model/training_metadata.json
     - assets/labels/labels.txt
+    - assets/SVG/
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

@@ -24,20 +24,30 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
   static const _items = DairyShowcaseItem.all;
   static const _loopMultiplier = 400;
 
-  late final PageController _pageController;
+  PageController? _pageController;
+  double? _pageViewportFraction;
   late final AnimationController _scanController;
   Timer? _autoTimer;
   int _logicalIndex = 0;
 
+  PageController _ensurePageController(BuildContext context) {
+    final vf = ResponsiveLayout.showcaseViewportFraction(context);
+    if (_pageController == null || _pageViewportFraction != vf) {
+      final start = _items.length * _loopMultiplier;
+      final old = _pageController;
+      _pageViewportFraction = vf;
+      _pageController = PageController(
+        viewportFraction: vf,
+        initialPage: start,
+      );
+      old?.dispose();
+    }
+    return _pageController!;
+  }
+
   @override
   void initState() {
     super.initState();
-    final start = _items.length * _loopMultiplier;
-    _pageController = PageController(
-      viewportFraction: 0.62,
-      initialPage: start,
-    );
-    _logicalIndex = 0;
     _scanController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 2400),
@@ -49,9 +59,10 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
   void _startAutoScroll() {
     _autoTimer?.cancel();
     _autoTimer = Timer.periodic(const Duration(milliseconds: 3200), (_) {
-      if (!mounted || !_pageController.hasClients) return;
-      final next = (_pageController.page ?? 0).round() + 1;
-      _pageController.animateToPage(
+      final pc = _pageController;
+      if (!mounted || pc == null || !pc.hasClients) return;
+      final next = (pc.page ?? 0).round() + 1;
+      pc.animateToPage(
         next,
         duration: const Duration(milliseconds: 700),
         curve: Curves.easeInOutCubic,
@@ -63,7 +74,7 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
   void dispose() {
     _autoTimer?.cancel();
     _scanController.dispose();
-    _pageController.dispose();
+    _pageController?.dispose();
     super.dispose();
   }
 
@@ -71,8 +82,11 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
 
   @override
   Widget build(BuildContext context) {
-    final compact = ResponsiveLayout.tier(context) == ScreenTier.compact;
-    final cardH = compact ? 148.0 : 168.0;
+    final pageController = _ensurePageController(context);
+    final tier = ResponsiveLayout.tier(context);
+    final compact = tier == ScreenTier.compact;
+    final cardH = ResponsiveLayout.showcaseCardHeight(context);
+    final captionGap = compact ? 14.0 : 18.0;
 
     return Container(
       decoration: const BoxDecoration(
@@ -111,7 +125,7 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
               ),
               Expanded(
                 child: PageView.builder(
-                  controller: _pageController,
+                  controller: pageController,
                   onPageChanged: (page) {
                     setState(() => _logicalIndex = _indexFromPage(page));
                   },
@@ -136,14 +150,13 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
                   },
                 ),
               ),
+              SizedBox(height: captionGap),
               Padding(
-                padding: const EdgeInsets.only(bottom: 36),
+                padding: EdgeInsets.fromLTRB(12, 0, 12, compact ? 28 : 32),
                 child: Column(
                   children: [
                     AnimatedSwitcher(
                       duration: const Duration(milliseconds: 400),
-                      switchInCurve: Curves.easeOutCubic,
-                      switchOutCurve: Curves.easeInCubic,
                       child: Text(
                         _items[_logicalIndex].title,
                         key: ValueKey(_logicalIndex),
@@ -175,9 +188,9 @@ class _DairyAiShowcaseCarouselState extends State<DairyAiShowcaseCarousel>
                         spacing: 6,
                       ),
                       onDotClicked: (i) {
-                        final base = (_pageController.page ?? 0).round();
+                        final base = (pageController.page ?? 0).round();
                         final aligned = base - _indexFromPage(base) + i;
-                        _pageController.animateToPage(
+                        pageController.animateToPage(
                           aligned,
                           duration: const Duration(milliseconds: 500),
                           curve: Curves.easeOutCubic,
@@ -256,75 +269,83 @@ class _ShowcaseCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
-      child: Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 4),
+      child: SizedBox(
         height: height,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(24),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: [
-              Colors.white.withValues(alpha: 0.92),
-              AppColors.primarySoft.withValues(alpha: 0.45),
-            ],
-          ),
-          border: Border.all(
-            width: isActive ? 2 : 1,
-            color: isActive
-                ? AppColors.primary.withValues(alpha: 0.65)
-                : AppColors.border,
-          ),
-          boxShadow: isActive
-              ? const [AppColors.aiGlow]
-              : [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.06),
-                    blurRadius: 16,
-                    offset: const Offset(0, 8),
-                  ),
-                ],
-        ),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(22),
-          child: Stack(
-            children: [
-              Positioned(
-                top: 10,
-                right: 10,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: AppColors.primary,
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    item.badge,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 9,
-                      fontWeight: FontWeight.w800,
+        child: Container(
+          clipBehavior: Clip.antiAlias,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(24),
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [
+                Colors.white.withValues(alpha: isActive ? 0.98 : 0.88),
+                AppColors.primarySoft.withValues(alpha: isActive ? 0.35 : 0.18),
+              ],
+            ),
+            boxShadow: isActive
+                ? [
+                    BoxShadow(
+                      color: AppColors.primary.withValues(alpha: 0.12),
+                      blurRadius: 20,
+                      offset: const Offset(0, 6),
                     ),
-                  ),
-                ),
-              ),
-              Center(
-                child: SvgPicture.string(
-                  item.svg,
-                  width: 96,
-                  height: 96,
-                )
-                    .animate(onPlay: (c) => c.repeat(reverse: true))
-                    .moveY(
-                      begin: isActive ? -4 : -2,
-                      end: isActive ? 4 : 2,
-                      duration: isActive ? 2.2.seconds : 2.8.seconds,
-                      curve: Curves.easeInOut,
-                    ),
-              ),
-            ],
+                  ]
+                : null,
           ),
+          child: LayoutBuilder(
+              builder: (context, constraints) {
+                final pad = ShowcaseSize.iconPaddingSides;
+                final top = ShowcaseSize.iconPaddingTop;
+                final bottom = ShowcaseSize.iconPaddingBottom;
+                final artW = constraints.maxWidth - pad * 2;
+                final artH = constraints.maxHeight - top - bottom;
+
+                return Padding(
+                  padding: EdgeInsets.fromLTRB(pad, top, pad, bottom),
+                  child: _ShowcaseSvg(
+                    item: item,
+                    width: artW,
+                    height: artH,
+                  ),
+                );
+              },
+            ),
         ),
+      ),
+    );
+  }
+
+}
+
+class _ShowcaseSvg extends StatelessWidget {
+  final DairyShowcaseItem item;
+  final double width;
+  final double height;
+
+  const _ShowcaseSvg({
+    required this.item,
+    required this.width,
+    required this.height,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final Widget graphic = item.svgAsset != null
+        ? SvgPicture.asset(
+            item.svgAsset!,
+            semanticsLabel: item.title,
+          )
+        : SvgPicture.string(item.svg!);
+
+    return SizedBox(
+      width: width,
+      height: height,
+      child: FittedBox(
+        fit: BoxFit.contain,
+        alignment: Alignment.center,
+        child: graphic,
       ),
     );
   }

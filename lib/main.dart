@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' as ui;
 
@@ -9,6 +10,7 @@ import 'package:image_picker/image_picker.dart';
 
 import 'firebase_options.dart';
 import 'models/dairy_pipeline_report.dart';
+import 'services/capture_firestore_service.dart';
 import 'services/classifier_service_new.dart';
 import 'services/image_based_milk_calculator.dart';
 import 'services/inference_logger.dart';
@@ -68,6 +70,7 @@ class DetectorHomePage extends StatefulWidget {
 class _DetectorHomePageState extends State<DetectorHomePage> {
   final _picker = ImagePicker();
   final _classifier = ClassifierService();
+  final _captureStore = CaptureFirestoreService();
 
   /// Model is trained for local (desi) buffalo only — not breed/race-specific.
   static const String _localBuffaloType = 'Local/Desi';
@@ -88,6 +91,8 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
   bool _isModelReady = false;
   String? _modelLoadError;
   String? _error;
+  /// Firestore document id for the current photo (`captures/{captureId}`).
+  String? _currentCaptureId;
 
   @override
   void initState() {
@@ -158,7 +163,9 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
         _flowStage = _CaptureFlowStage.review;
         _animalIsHealthy = true;
         _error = null;
+        _currentCaptureId = null;
       });
+      _uploadCaptureDraft(image.path, source.name);
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -168,8 +175,71 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     }
   }
 
-  Future<void> _runPrediction() async {
-    if (_pickedImage == null || _animalIsHealthy == null) return;
+  Future<void> _uploadCaptureDraft(String imagePath, String source) async {
+    try {
+      final id = await _captureStore.saveCaptureDraft(
+        imagePath: imagePath,
+        source: source,
+        breed: _localBuffaloType,
+      );
+      if (!mounted) return;
+      setState(() => _currentCaptureId = id);
+      debugPrint('LOG: Firestore capture id=$id');
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Firestore: captures/$id'),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+    } catch (e) {
+      debugPrint('LOG: Firestore capture draft failed: $e');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Firestore save failed: $e'),
+          backgroundColor: Colors.red.shade800,
+        ),
+      );
+    }
+  }
+
+  Future<void> _syncReviewToFirestore() async {
+    final id = _currentCaptureId;
+    if (id == null || _animalIsHealthy == null) return;
+    try {
+      final params = _hybridModelParams();
+      await _captureStore.markReviewed(
+        captureId: id,
+        animalHealthy: _animalIsHealthy!,
+        age: params.age,
+        lactation: params.lactation,
+        daysInMilk: params.daysInMilk,
+        feed: params.feed,
+        breed: _localBuffaloType,
+      );
+    } catch (e) {
+      debugPrint('LOG: Firestore review update failed: $e');
+    }
+  }
+
+  Future<void> _syncAnalysisToFirestore(PredictionResult result) async {
+    final id = _currentCaptureId;
+    if (id == null) return;
+    try {
+      await _captureStore.completeAnalysis(
+        captureId: id,
+        result: result,
+      );
+    } catch (e) {
+      debugPrint('LOG: Firestore analysis update failed: $e');
+    }
+  }
+
+  /// Instant UI feedback, then run CV on the next frame (keeps button responsive).
+  void _onProceedTapped() {
+    if (_pickedImage == null || _animalIsHealthy == null || _isLoading) return;
+
+    unawaited(_syncReviewToFirestore());
 
     setState(() {
       _isLoading = true;
@@ -178,55 +248,56 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       _imageBasedResult = null;
     });
 
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isLoading) return;
+      _runPredictionWork();
+    });
+  }
+
+  Future<void> _runPredictionWork() async {
     try {
       debugPrint('LOG: Starting classification...');
       final path = _pickedImage!.path;
-      final imageCalculator = ImageBasedMilkCalculator();
       final params = _hybridModelParams();
-      final tasks = await Future.wait([
-        _classifier.classifyImage(
-          path,
-          breed: _localBuffaloType,
-          age: params.age,
-          lactation: params.lactation,
-          daysInMilk: params.daysInMilk,
-          feed: params.feed,
-        ),
-        imageCalculator.calculateMilkFromImage(path),
-      ]);
-      final result = tasks[0] as PredictionResult;
-      final imageBasedResult = tasks[1] as Map<String, dynamic>;
-      
+      final result = await _classifier.classifyImage(
+        path,
+        breed: _localBuffaloType,
+        age: params.age,
+        lactation: params.lactation,
+        daysInMilk: params.daysInMilk,
+        feed: params.feed,
+      );
+
       if (!mounted) return;
-      
-      final diag = result.diagnostics;
-      debugPrint('LOG: ══════════ PREDICTION PROOF ══════════');
-      debugPrint('LOG: Source: ${result.predictionSource}');
-      debugPrint('LOG: Label shown: ${result.label}');
-      debugPrint('LOG: Milk: ${result.estimatedLiters} L/day');
-      debugPrint('LOG: Confidence: ${(result.confidence * 100).toStringAsFixed(1)}%');
-      if (diag != null) {
-        debugPrint('LOG: ${diag.proofSummary}');
-        debugPrint(
-          'LOG: TFLite ran interpreter.run: ${diag.tfliteInferenceExecuted}',
-        );
-        debugPrint('LOG: Raw class: ${diag.rawTfliteLabel}');
-        debugPrint(
-          'LOG: Timings — load ${diag.tfliteLoadMs}ms | rules ${diag.rulesGateMs}ms | infer ${diag.tfliteInferenceMs}ms',
-        );
-        for (final e in diag.tfliteAllScores.entries) {
+
+      Map<String, dynamic>? imageBasedResult;
+      if (kDebugMode) {
+        imageBasedResult =
+            await ImageBasedMilkCalculator().calculateMilkFromImage(path);
+        final diag = result.diagnostics;
+        debugPrint('LOG: ══════════ PREDICTION PROOF ══════════');
+        debugPrint('LOG: Source: ${result.predictionSource}');
+        debugPrint('LOG: Label shown: ${result.label}');
+        debugPrint('LOG: Milk: ${result.estimatedLiters} L/day');
+        debugPrint('LOG: Confidence: ${(result.confidence * 100).toStringAsFixed(1)}%');
+        if (diag != null) {
+          debugPrint('LOG: ${diag.proofSummary}');
           debugPrint(
-            'LOG:   score ${e.key} = ${(e.value * 100).toStringAsFixed(2)}%',
+            'LOG: TFLite ran interpreter.run: ${diag.tfliteInferenceExecuted}',
+          );
+          debugPrint('LOG: Raw class: ${diag.rawTfliteLabel}');
+          debugPrint(
+            'LOG: Timings — load ${diag.tfliteLoadMs}ms | rules ${diag.rulesGateMs}ms | infer ${diag.tfliteInferenceMs}ms',
           );
         }
-      } else {
-        debugPrint('LOG: (No TFLite diagnostics — rules/error path)');
+        debugPrint(
+          'LOG: IMAGE-BASED (debug): ${imageBasedResult['milk_per_day_liters']} L/day',
+        );
+        debugPrint('LOG: ══════════════════════════════════════');
       }
-      debugPrint('LOG: IMAGE-BASED (separate heuristic): ${imageBasedResult['milk_per_day_liters']} L/day');
-      final imageConfidence = (imageBasedResult['confidence'] ?? 0.0) as double;
-      debugPrint('LOG: Visual score: ${(imageConfidence * 100).toStringAsFixed(1)}%');
-      debugPrint('LOG: ══════════════════════════════════════');
-      
+
+      await _syncAnalysisToFirestore(result);
+
       setState(() {
         _prediction = result;
         _imageBasedResult = imageBasedResult;
@@ -253,6 +324,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       _imageBasedResult = null;
       _animalIsHealthy = null;
       _error = null;
+      _currentCaptureId = null;
     });
   }
 
@@ -467,9 +539,32 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
-  Widget _buildReviewPanel(bool isWide) {
-    final canProceed = _animalIsHealthy != null && !_isLoading && _isModelReady;
+  Widget _buildProceedButton() {
+    final ready = _animalIsHealthy != null && _isModelReady;
+    return FilledButton.icon(
+      onPressed: ready && !_isLoading ? _onProceedTapped : null,
+      style: FilledButton.styleFrom(
+        backgroundColor: AppColors.primary,
+        foregroundColor: Colors.white,
+        disabledBackgroundColor: AppColors.primaryDark,
+        disabledForegroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 16),
+      ),
+      icon: _isLoading
+          ? const SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(
+                strokeWidth: 2,
+                color: Colors.white,
+              ),
+            )
+          : const Icon(Icons.arrow_forward_rounded),
+      label: Text(_isLoading ? 'Analyzing…' : 'Proceed'),
+    );
+  }
 
+  Widget _buildReviewPanel(bool isWide) {
     return GlassCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -516,20 +611,12 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                 const SizedBox(width: 12),
                 Expanded(
                   flex: 2,
-                  child: FilledButton.icon(
-                    onPressed: canProceed ? _runPrediction : null,
-                    icon: const Icon(Icons.arrow_forward_rounded),
-                    label: const Text('Proceed'),
-                  ),
+                  child: _buildProceedButton(),
                 ),
               ],
             )
           else ...[
-            FilledButton.icon(
-              onPressed: canProceed ? _runPrediction : null,
-              icon: const Icon(Icons.arrow_forward_rounded),
-              label: const Text('Proceed'),
-            ),
+            _buildProceedButton(),
             const SizedBox(height: 10),
             OutlinedButton.icon(
               onPressed: _isLoading ? null : _resetToCapture,

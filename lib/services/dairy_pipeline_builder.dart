@@ -2,6 +2,7 @@ import '../models/dairy_pipeline_report.dart';
 import 'classifier_service_new.dart';
 import 'milk_mirror_measurement_service.dart';
 import 'milk_production_scale.dart';
+import 'yield_fusion_service.dart';
 
 /// Builds infographic-style pipeline report from existing analyzers.
 class DairyPipelineBuilder {
@@ -14,6 +15,9 @@ class DairyPipelineBuilder {
     required double estimatedLiters,
     required String? tfliteBand,
     int daysInMilk = 30,
+    double? yieldMin,
+    double? yieldMax,
+    YieldPredictionStatus? fusionStatus,
   }) {
     final gateOk = gate?.status == 'valid';
     final mirrorOk = mirror?.success == true;
@@ -62,7 +66,8 @@ class DairyPipelineBuilder {
       alert = DairyAlert.caution;
       alertMessage = mirror?.error ?? 'Could not measure escutcheon — use rear udder view';
       tip = 'Stand 3–5 ft behind, camera at udder height, full udder in frame.';
-    } else if (displayConfidence < 0.45) {
+    } else if (fusionStatus == YieldPredictionStatus.caution ||
+        displayConfidence < 0.45) {
       alert = DairyAlert.caution;
       alertMessage = 'Prediction with caution — train TFLite or retake photo';
       tip = 'Use a clear rear udder photo; add more labeled training images for accuracy.';
@@ -138,9 +143,12 @@ class DairyPipelineBuilder {
       lactationState: lactationState,
       healthStatus: healthStatus,
       lactationStage: stage,
-      yieldRange: MilkProductionScale.formatBand(
-        MilkProductionScale.clamp(estimatedLiters),
-      ),
+      yieldRange: yieldMin != null && yieldMax != null
+          ? '${MilkProductionScale.clamp(yieldMin).toStringAsFixed(1)} – '
+              '${MilkProductionScale.clamp(yieldMax).toStringAsFixed(1)} L/day'
+          : MilkProductionScale.formatBand(
+              MilkProductionScale.clamp(estimatedLiters),
+            ),
       yieldLiters: MilkProductionScale.clamp(estimatedLiters),
       yieldConfidence: displayConfidence,
       alert: alert,

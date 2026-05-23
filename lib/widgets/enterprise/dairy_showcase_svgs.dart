@@ -1,130 +1,92 @@
-/// Inline SVG artwork for the dairy AI showcase carousel (purple enterprise theme).
-abstract final class DairyShowcaseSvgs {
-  static const buffaloRear = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <ellipse cx="60" cy="72" rx="38" ry="28" fill="#2D1B4E" opacity="0.15"/>
-  <path d="M38 45 Q60 28 82 45 L78 88 Q60 98 42 88 Z" fill="#3D2A5C"/>
-  <ellipse cx="48" cy="52" rx="8" ry="10" fill="#4A3568"/>
-  <ellipse cx="72" cy="52" rx="8" ry="10" fill="#4A3568"/>
-  <ellipse cx="60" cy="78" rx="14" ry="10" fill="#6C4DFF" opacity="0.35"/>
-  <circle cx="60" cy="38" r="6" fill="#6C4DFF"/>
-</svg>''';
+/// Showcase carousel: fixed icon size + SVG assets under [assets/SVG/].
+///
+/// **Design your SVGs at 96×96 px** (viewBox `0 0 96 96`).
+/// Export from Illustrator with fills expanded / inline (not CSS classes only).
+abstract final class ShowcaseSize {
+  /// Illustrator / Figma artboard (exports scale up in the carousel).
+  static const designArtboardPx = 96;
 
-  static const cowRear = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <ellipse cx="60" cy="74" rx="36" ry="26" fill="#6C4DFF" opacity="0.08"/>
-  <path d="M40 48 Q60 32 80 48 L76 86 Q60 94 44 86 Z" fill="#8B7355"/>
-  <ellipse cx="50" cy="55" rx="7" ry="9" fill="#A08060"/>
-  <ellipse cx="70" cy="55" rx="7" ry="9" fill="#A08060"/>
-  <path d="M52 70 Q60 82 68 70" stroke="#F5F3FF" stroke-width="3" fill="none"/>
-  <rect x="54" y="34" width="12" height="8" rx="4" fill="#E8E0FF"/>
-</svg>''';
+  /// Insets inside the white carousel card.
+  static const iconPaddingTop = 12.0;
+  static const iconPaddingSides = 10.0;
+  static const iconPaddingBottom = 12.0;
 
-  static const milking = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <rect x="28" y="40" width="64" height="52" rx="8" fill="#EDEBFF" stroke="#6C4DFF" stroke-width="2"/>
-  <path d="M44 52 L76 52 L72 78 Q60 88 48 78 Z" fill="#6C4DFF" opacity="0.25"/>
-  <line x1="60" y1="52" x2="60" y2="32" stroke="#6C4DFF" stroke-width="3"/>
-  <ellipse cx="60" cy="30" rx="10" ry="6" fill="#4F35E8"/>
-  <circle cx="38" cy="70" r="4" fill="#10B981"/>
-  <circle cx="82" cy="70" r="4" fill="#10B981"/>
-</svg>''';
+}
 
-  static const aiScan = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <rect x="22" y="28" width="76" height="64" rx="12" fill="#F6F4FF" stroke="#6C4DFF" stroke-width="2"/>
-  <path d="M30 50 L90 50" stroke="#6C4DFF" stroke-width="2" stroke-dasharray="6 4" opacity="0.6"/>
-  <path d="M30 62 L90 62" stroke="#6C4DFF" stroke-width="2" stroke-dasharray="6 4" opacity="0.8"/>
-  <path d="M30 74 L90 74" stroke="#6C4DFF" stroke-width="2" stroke-dasharray="6 4"/>
-  <circle cx="60" cy="56" r="18" fill="none" stroke="#6C4DFF" stroke-width="2"/>
-  <path d="M52 56 L58 62 L70 50" stroke="#10B981" stroke-width="3" fill="none" stroke-linecap="round"/>
-</svg>''';
-
-  static const health = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <circle cx="60" cy="58" r="32" fill="#EDEBFF"/>
-  <path d="M60 38 L60 78 M40 58 L80 58" stroke="#6C4DFF" stroke-width="4" stroke-linecap="round"/>
-  <path d="M48 70 Q60 88 72 70" fill="none" stroke="#10B981" stroke-width="3"/>
-  <circle cx="42" cy="42" r="6" fill="#10B981" opacity="0.8"/>
-  <circle cx="78" cy="42" r="6" fill="#10B981" opacity="0.8"/>
-</svg>''';
-
-  static const lactation = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <path d="M30 85 L30 45 Q60 25 90 45 L90 85" fill="none" stroke="#6C4DFF" stroke-width="3"/>
-  <circle cx="30" cy="45" r="5" fill="#6C4DFF"/>
-  <circle cx="60" cy="32" r="5" fill="#6C4DFF"/>
-  <circle cx="90" cy="45" r="5" fill="#6C4DFF"/>
-  <rect x="48" y="62" width="24" height="28" rx="6" fill="#6C4DFF" opacity="0.2"/>
-  <text x="60" y="82" text-anchor="middle" font-size="14" fill="#4F35E8" font-family="sans-serif">DIM</text>
-</svg>''';
-
-  static const yield = '''
-<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-  <rect x="28" y="70" width="12" height="28" rx="4" fill="#6C4DFF" opacity="0.35"/>
-  <rect x="44" y="52" width="12" height="46" rx="4" fill="#6C4DFF" opacity="0.55"/>
-  <rect x="60" y="38" width="12" height="60" rx="4" fill="#6C4DFF" opacity="0.75"/>
-  <rect x="76" y="48" width="12" height="50" rx="4" fill="#6C4DFF"/>
-  <path d="M32 32 L88 32" stroke="#4F35E8" stroke-width="2"/>
-  <text x="60" y="28" text-anchor="middle" font-size="11" fill="#6C4DFF" font-family="sans-serif">L/day</text>
-</svg>''';
+abstract final class DairyShowcaseAssets {
+  static const buffaloRear = 'assets/SVG/buffalo_1.svg';
+  static const health = 'assets/SVG/baffalo.svg';
+  static const cowRear = 'assets/SVG/Cow.svg';
+  static const milking = 'assets/SVG/milk_Extraction.svg';
 }
 
 class DairyShowcaseItem {
   final String title;
   final String subtitle;
-  final String badge;
-  final String svg;
+  final String? svgAsset;
+  final String? svg;
 
   const DairyShowcaseItem({
     required this.title,
     required this.subtitle,
-    required this.badge,
-    required this.svg,
-  });
+    this.svgAsset,
+    this.svg,
+  }) : assert(svgAsset != null || svg != null);
 
   static const List<DairyShowcaseItem> all = [
     DairyShowcaseItem(
       title: 'Buffalo rear',
       subtitle: 'Pin bone escutcheon',
-      badge: 'Vision',
-      svg: DairyShowcaseSvgs.buffaloRear,
+      svgAsset: DairyShowcaseAssets.buffaloRear,
     ),
     DairyShowcaseItem(
       title: 'Cow rear',
       subtitle: 'Herd comparison',
-      badge: 'Species',
-      svg: DairyShowcaseSvgs.cowRear,
+      svgAsset: DairyShowcaseAssets.cowRear,
     ),
     DairyShowcaseItem(
       title: 'Milking',
       subtitle: 'Yield context',
-      badge: 'Dairy',
-      svg: DairyShowcaseSvgs.milking,
+      svgAsset: DairyShowcaseAssets.milking,
     ),
     DairyShowcaseItem(
       title: 'AI scanning',
       subtitle: 'Neural analysis',
-      badge: 'AI Core',
-      svg: DairyShowcaseSvgs.aiScan,
+      svg: _aiScan,
     ),
     DairyShowcaseItem(
       title: 'Health',
       subtitle: 'Condition check',
-      badge: 'Health',
-      svg: DairyShowcaseSvgs.health,
+      svgAsset: DairyShowcaseAssets.health,
     ),
     DairyShowcaseItem(
       title: 'Lactation',
       subtitle: 'Stage & DIM',
-      badge: 'Stage',
-      svg: DairyShowcaseSvgs.lactation,
+      svg: _lactation,
     ),
     DairyShowcaseItem(
       title: 'Milk yield',
       subtitle: 'Liters per day',
-      badge: 'Predict',
-      svg: DairyShowcaseSvgs.yield,
+      svgAsset: DairyShowcaseAssets.milking,
     ),
   ];
+
+  static const _aiScan = '''
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
+  <rect x="18" y="22" width="60" height="52" rx="10" fill="#F6F4FF" stroke="#6C4DFF" stroke-width="2"/>
+  <path d="M24 40 L72 40" stroke="#6C4DFF" stroke-width="2" stroke-dasharray="5 3" opacity="0.7"/>
+  <path d="M24 50 L72 50" stroke="#6C4DFF" stroke-width="2" stroke-dasharray="5 3"/>
+  <path d="M24 60 L72 60" stroke="#6C4DFF" stroke-width="2" stroke-dasharray="5 3" opacity="0.8"/>
+  <circle cx="48" cy="45" r="14" fill="none" stroke="#6C4DFF" stroke-width="2"/>
+  <path d="M42 45 L46 49 L56 39" stroke="#10B981" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+</svg>''';
+
+  static const _lactation = '''
+<svg viewBox="0 0 96 96" xmlns="http://www.w3.org/2000/svg">
+  <path d="M24 68 L24 36 Q48 20 72 36 L72 68" fill="none" stroke="#6C4DFF" stroke-width="2.5"/>
+  <circle cx="24" cy="36" r="4" fill="#6C4DFF"/>
+  <circle cx="48" cy="26" r="4" fill="#6C4DFF"/>
+  <circle cx="72" cy="36" r="4" fill="#6C4DFF"/>
+  <rect x="38" y="50" width="20" height="22" rx="5" fill="#6C4DFF" opacity="0.2"/>
+</svg>''';
 }

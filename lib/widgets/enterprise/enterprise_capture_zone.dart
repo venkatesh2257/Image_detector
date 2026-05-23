@@ -41,7 +41,10 @@ class EnterpriseCaptureZone extends StatelessWidget {
           height = maxH;
           width = height * aspect;
         }
-        height = math.max(height, 160);
+        final minH = ResponsiveLayout.tier(context) == ScreenTier.compact
+            ? 160.0
+            : 220.0;
+        height = math.max(height, minH);
 
         return Align(
           alignment: Alignment.center,

@@ -49,9 +49,9 @@ abstract final class ResponsiveLayout {
 
     return switch (tier(context)) {
       ScreenTier.compact => math.min(usable * 0.36, 300),
-      ScreenTier.medium => math.min(usable * 0.40, 340),
-      ScreenTier.expanded => math.min(usable * 0.42, 360),
-      ScreenTier.wide => math.min(usable * 0.38, 320),
+      ScreenTier.medium => math.min(usable * 0.40, 360),
+      ScreenTier.expanded => math.min(usable * 0.44, 400),
+      ScreenTier.wide => math.min(usable * 0.44, 400),
     };
   }
 
@@ -62,7 +62,27 @@ abstract final class ResponsiveLayout {
       ScreenTier.compact => parentWidth,
       ScreenTier.medium => math.min(parentWidth, 560.0),
       ScreenTier.expanded => math.min(parentWidth, 620.0),
-      ScreenTier.wide => math.min(parentWidth, 520.0),
+      ScreenTier.wide => math.min(parentWidth, 620.0),
+    };
+  }
+
+  /// White carousel card height (phone → desktop).
+  static double showcaseCardHeight(BuildContext context) {
+    return switch (tier(context)) {
+      ScreenTier.compact => 180,
+      ScreenTier.medium => 192,
+      ScreenTier.expanded => 208,
+      ScreenTier.wide => 212,
+    };
+  }
+
+  /// PageView slide width fraction (lower = wider cards on desktop).
+  static double showcaseViewportFraction(BuildContext context) {
+    return switch (tier(context)) {
+      ScreenTier.compact => 0.62,
+      ScreenTier.medium => 0.56,
+      ScreenTier.expanded => 0.50,
+      ScreenTier.wide => 0.48,
     };
   }
 

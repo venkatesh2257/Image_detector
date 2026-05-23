@@ -46,8 +46,6 @@ class MilkMirrorMeasurementService {
     }
     final image = img.bakeOrientation(decoded);
 
-    final anatomy = RearAnatomyDetector().detect(image);
-
     late final Offset leftPin;
     late final Offset rightPin;
     late final Offset udderPt;
@@ -57,36 +55,49 @@ class MilkMirrorMeasurementService {
     late final Offset pointD;
     var anatomyConfidence = 0.0;
 
-    if (anatomy != null) {
-      leftPin = anatomy.leftPin;
-      rightPin = anatomy.rightPin;
-      udderPt = anatomy.udder;
-      pointA = anatomy.pointA;
-      pointB = anatomy.pointB;
-      pointC = anatomy.leftPin;
-      pointD = anatomy.rightPin;
-      anatomyConfidence = anatomy.confidence;
-      InferenceLogger.log('MILK_MIRROR', 'Using rear anatomy detector landmarks');
+    if (leftHip != null && rightHip != null && udder != null) {
+      leftPin = leftHip;
+      rightPin = rightHip;
+      udderPt = udder;
+      pointA = spine ?? Offset((leftHip.dx + rightHip.dx) / 2, leftHip.dy - 0.08);
+      pointB = udder;
+      pointC = Offset(leftPin.dx, (leftPin.dy + udderPt.dy) / 2);
+      pointD = Offset(rightPin.dx, (rightPin.dy + udderPt.dy) / 2);
+      anatomyConfidence = 0.85;
+      InferenceLogger.log('MILK_MIRROR', 'Using landmarks from rules gate');
     } else {
+      final anatomy = RearAnatomyDetector().detect(image);
+      if (anatomy != null) {
+        leftPin = anatomy.leftPin;
+        rightPin = anatomy.rightPin;
+        udderPt = anatomy.udder;
+        pointA = anatomy.pointA;
+        pointB = anatomy.pointB;
+        pointC = anatomy.leftPin;
+        pointD = anatomy.rightPin;
+        anatomyConfidence = anatomy.confidence;
+        InferenceLogger.log('MILK_MIRROR', 'Using rear anatomy detector landmarks');
+      } else {
       final w = image.width.toDouble();
       final h = image.height.toDouble();
-      final l = leftHip ?? _detectLeftHip(image, w, h);
-      final r = rightHip ?? _detectRightHip(image, w, h);
-      final u = udder ?? _detectUdder(image, w, h);
-      final s = spine ?? _detectSpine(image, w, h);
-      if (l == null || r == null || u == null) {
-        InferenceLogger.log('MILK_MIRROR', 'Missing landmarks L=$l R=$r U=$u');
-        return MilkMirrorResult.failed(
-          'Could not find pin bones / udder — use rear milk-mirror photo (3–5 ft, full udder)',
-        );
+        final l = leftHip ?? _detectLeftHip(image, w, h);
+        final r = rightHip ?? _detectRightHip(image, w, h);
+        final u = udder ?? _detectUdder(image, w, h);
+        final s = spine ?? _detectSpine(image, w, h);
+        if (l == null || r == null || u == null) {
+          InferenceLogger.log('MILK_MIRROR', 'Missing landmarks L=$l R=$r U=$u');
+          return MilkMirrorResult.failed(
+            'Could not find pin bones / udder — use rear milk-mirror photo (3–5 ft, full udder)',
+          );
+        }
+        leftPin = l;
+        rightPin = r;
+        udderPt = u;
+        pointA = s ?? Offset((l.dx + r.dx) / 2, l.dy - 0.08);
+        pointB = u;
+        pointC = Offset(l.dx, (l.dy + u.dy) / 2);
+        pointD = Offset(r.dx, (r.dy + u.dy) / 2);
       }
-      leftPin = l;
-      rightPin = r;
-      udderPt = u;
-      pointA = s ?? Offset((l.dx + r.dx) / 2, l.dy - 0.08);
-      pointB = u;
-      pointC = Offset(l.dx, (l.dy + u.dy) / 2);
-      pointD = Offset(r.dx, (r.dy + u.dy) / 2);
     }
 
     var height = (pointB.dy - pointA.dy).abs();

@@ -19,6 +19,22 @@ void main() {
     expect(result.label, isNot('No Buffalo Detected'));
   });
 
+  test('rules gate passes on 10 lit rear buffalo (dark hide)', () async {
+    const path = r'assets/images/animal photos/10 lit/k3 (2).jpg';
+    if (!File(path).existsSync()) return;
+
+    final service = ClassifierService();
+    await service.loadModel();
+    final result = await service.classifyImage(path);
+
+    expect(
+      result.predictionSource,
+      isNot('rules_gate'),
+      reason: result.diagnostics?.rulesRejectReason ?? result.label,
+    );
+    expect(result.label, isNot('No Buffalo Detected'));
+  });
+
   test('rules gate rejects centered portrait selfie', () async {
     final dir = Directory.systemTemp.createTempSync('buffalo_gate_selfie');
     final path = '${dir.path}/fake_selfie.jpg';

@@ -1,11 +1,10 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
-import 'package:image/image.dart' as img;
 
 import '../../models/training_sample.dart';
+import '../../services/firestore_image_codec.dart';
 
 /// Firestore is the only training data store (no local DB / manifest files).
 class FirebaseTrainingService {
@@ -62,7 +61,7 @@ class FirebaseTrainingService {
 
     debugPrint('[FIREBASE TRAINING] Upload label=$assetFolder doc=$docId');
 
-    final imageData = await _encodeImageForFirestore(sourceImagePath);
+    final imageData = await FirestoreImageCodec.encodeFile(sourceImagePath);
 
     final normalizedTags = hashtags
         .map((e) => e.trim())
@@ -108,27 +107,6 @@ class FirebaseTrainingService {
       stats[sample.primaryLabel] = (stats[sample.primaryLabel] ?? 0) + 1;
     }
     return stats;
-  }
-
-  Future<String> _encodeImageForFirestore(String sourceImagePath) async {
-    final bytes = await File(sourceImagePath).readAsBytes();
-    final decoded = img.decodeImage(bytes);
-    if (decoded == null) {
-      throw FirebaseTrainingException('Could not decode selected image');
-    }
-
-    final resized = img.copyResize(
-      decoded,
-      width: decoded.width > 640 ? 640 : decoded.width,
-    );
-    final jpgBytes = img.encodeJpg(resized, quality: 65);
-    final base64Data = base64Encode(jpgBytes);
-    if (base64Data.length > 700000) {
-      throw FirebaseTrainingException(
-        'Image too large for Firestore. Use a smaller photo.',
-      );
-    }
-    return 'data:image/jpeg;base64,$base64Data';
   }
 
   String _sanitizeForPath(String input) {

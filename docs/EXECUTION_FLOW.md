@@ -2,6 +2,8 @@
 
 This document traces **what runs from app launch** through each user action, which **files** are involved, and the **purpose** of each module.
 
+**Pipeline strategy (crop-first, Phase B → A):** see [MILK_MIRROR_PIPELINE_STRATEGY.md](./MILK_MIRROR_PIPELINE_STRATEGY.md).
+
 ---
 
 ## 1. Application bootstrap
