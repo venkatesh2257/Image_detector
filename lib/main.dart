@@ -119,6 +119,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
 
   Future<void> _prepareModel() async {
     debugPrint('LOG: ═══ Initializing TFLite on app start ═══');
+    debugPrint('LOG: Checking for updated on-device model from Firebase…');
     final ready = await _classifier.loadModel();
     final diag = _classifier.lastDiagnostics;
     debugPrint(
@@ -187,8 +188,8 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
       debugPrint('LOG: Firestore capture id=$id');
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('Firestore: captures/$id'),
-          duration: const Duration(seconds: 6),
+          content: Text('Saved capture $id (camera/gallery → Firestore + Storage)'),
+          duration: const Duration(seconds: 4),
         ),
       );
     } catch (e) {

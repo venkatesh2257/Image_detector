@@ -1,0 +1,15 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /captures/{captureId}/{fileName} {
+      allow read, write: if true;
+    }
+    match /training_queue/{label}/{fileName} {
+      allow read, write: if true;
+    }
+    match /models/production/{fileName} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}

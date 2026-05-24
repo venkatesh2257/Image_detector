@@ -7,6 +7,7 @@ class CaptureRecord {
   final String? userId;
   final String imageData;
   final String imageName;
+  final String? imageStorageUrl;
   final String source;
   final String status;
   final DateTime capturedAt;
@@ -23,6 +24,15 @@ class CaptureRecord {
   final bool? rulesGatePassed;
   final String? trainingLabel;
   final String? trainingDocPath;
+  final String? contentHash;
+  final double? imageQualityScore;
+  final bool? imageQualityPassed;
+  final List<String>? imageQualityIssues;
+  final String? platform;
+  final bool? pipelinePassed;
+  final double? pipelineScore;
+  final String? pipelineFailedStage;
+  final String? pipelineRejectReason;
 
   const CaptureRecord({
     required this.captureId,
@@ -30,6 +40,7 @@ class CaptureRecord {
     this.userId,
     required this.imageData,
     required this.imageName,
+    this.imageStorageUrl,
     required this.source,
     required this.status,
     required this.capturedAt,
@@ -46,6 +57,15 @@ class CaptureRecord {
     this.rulesGatePassed,
     this.trainingLabel,
     this.trainingDocPath,
+    this.contentHash,
+    this.imageQualityScore,
+    this.imageQualityPassed,
+    this.imageQualityIssues,
+    this.platform,
+    this.pipelinePassed,
+    this.pipelineScore,
+    this.pipelineFailedStage,
+    this.pipelineRejectReason,
   });
 
   Map<String, dynamic> toFirestore() {
@@ -55,6 +75,7 @@ class CaptureRecord {
       if (userId != null) 'userId': userId,
       'imageData': imageData,
       'imageName': imageName,
+      if (imageStorageUrl != null) 'imageStorageUrl': imageStorageUrl,
       'source': source,
       'status': status,
       'capturedAt': Timestamp.fromDate(capturedAt),
@@ -71,7 +92,18 @@ class CaptureRecord {
       if (rulesGatePassed != null) 'rulesGatePassed': rulesGatePassed,
       if (trainingLabel != null) 'trainingLabel': trainingLabel,
       if (trainingDocPath != null) 'trainingDocPath': trainingDocPath,
-      'schemaVersion': 3,
+      if (contentHash != null) 'contentHash': contentHash,
+      if (imageQualityScore != null) 'imageQualityScore': imageQualityScore,
+      if (imageQualityPassed != null) 'imageQualityPassed': imageQualityPassed,
+      if (imageQualityIssues != null && imageQualityIssues!.isNotEmpty)
+        'imageQualityIssues': imageQualityIssues,
+      if (platform != null) 'platform': platform,
+      if (pipelinePassed != null) 'pipelinePassed': pipelinePassed,
+      if (pipelineScore != null) 'pipelineScore': pipelineScore,
+      if (pipelineFailedStage != null) 'pipelineFailedStage': pipelineFailedStage,
+      if (pipelineRejectReason != null)
+        'pipelineRejectReason': pipelineRejectReason,
+      'schemaVersion': 5,
       'app': 'milk_mirror',
     };
   }

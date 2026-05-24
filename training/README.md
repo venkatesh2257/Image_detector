@@ -1,57 +1,50 @@
-# Admin Training Automation
+# Training & Continuous Learning
 
-## 1) Collect data from app
-- Open the app and go to the `Admin` tab.
-- Add image + primary label + hashtags + metadata.
-- Click `Export manifest for automated training`.
+## Quick start
 
-## 2) Prepare dataset folders
-From project root:
-
-```powershell
+```bash
 cd training
-python -m venv .venv
-.\.venv\Scripts\activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-python prepare_dataset.py
-```
 
-When prompted, paste the `admin_dataset` path shown in the app admin panel.
+export GOOGLE_APPLICATION_CREDENTIALS="/path/to/serviceAccount.json"
 
-## 3) Train model
+# Export user uploads from Firestore → raw_pool
+python export_firestore_dataset.py
 
-If you have no trained model yet, bootstrap an untrained TFLite file for the app:
+# Build train/val/test with QA + balance
+python dataset_manager.py
 
-```powershell
-python export_bootstrap_model.py
-```
-
-When you have labeled images in `training/datasets/train`, train for real accuracy:
-
-```powershell
+# Train + evaluate (confusion matrix in output/)
 python train_model.py
 ```
 
-Generated files:
-- `training/output/model.tflite`
-- `training/output/labels.txt`
+## Automatic retrain (production)
 
-## 4) Integrate into Flutter app
-Copy:
-- `training/output/model.tflite` -> `assets/model/model.tflite`
-- `training/output/labels.txt` -> `assets/labels/labels.txt`
-
-Then run:
-
-```powershell
-cd ..
-flutter pub get
-flutter run -d windows
+```bash
+python auto_retrain.py          # only when ≥300 new samples (config)
+python auto_retrain.py --force  # ignore threshold
 ```
 
-## Retrain flow
-After collecting more samples in Admin panel:
-1. Export manifest again
-2. Run `prepare_dataset.py`
-3. Run `train_model.py`
-4. Replace app model and labels
+Pipeline:
+
+1. `export_firestore_dataset.py` — Firestore/Storage → `data/raw_pool/`
+2. `dataset_manager.py` — QA, dedupe, train/val/test split
+3. `train_model.py` — candidate model + metrics
+4. Compare accuracy → deploy only if improved
+5. `upload_model.py` — Storage + `ml_pipeline/state`
+6. Flutter app downloads new `.tflite` on next launch
+
+## Other scripts
+
+| Script | Purpose |
+|--------|---------|
+| `calibrate_milk_mirror.py` | Escutcheon → liters calibration |
+| `hard_example_mining.py` | Flag low-confidence samples for review |
+| `export_bootstrap_model.py` | Untrained TFLite for first install |
+| `prepare_dataset.py` | Legacy: local `assets/images/animal photos` only |
+
+## Full documentation
+
+See [docs/CONTINUOUS_LEARNING.md](../docs/CONTINUOUS_LEARNING.md).

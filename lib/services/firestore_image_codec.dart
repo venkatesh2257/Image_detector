@@ -27,6 +27,17 @@ class FirestoreImageCodec {
     }
     return 'data:image/jpeg;base64,$base64Data';
   }
+
+  /// Decode `data:image/jpeg;base64,...` for Storage upload fallback.
+  static List<int>? decodeDataUrl(String dataUrl) {
+    final comma = dataUrl.indexOf(',');
+    if (comma < 0) return null;
+    try {
+      return base64Decode(dataUrl.substring(comma + 1));
+    } catch (_) {
+      return null;
+    }
+  }
 }
 
 class FirestoreImageCodecException implements Exception {
