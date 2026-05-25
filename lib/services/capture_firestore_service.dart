@@ -170,6 +170,8 @@ class CaptureFirestoreService {
       if (trainingDocPath != null) 'trainingDocPath': trainingDocPath,
       'analyzedAt': FieldValue.serverTimestamp(),
       if (result.hashtags.isNotEmpty) 'hashtags': result.hashtags,
+      if (result.scientificReport != null)
+        ...result.scientificReport!.toFirestore(),
     });
 
     debugPrint(

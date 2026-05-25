@@ -9,8 +9,12 @@ import 'inference_logger.dart';
 import '../models/dairy_pipeline_report.dart';
 import 'dairy_pipeline_builder.dart';
 import 'ai_pipeline_orchestrator.dart';
+import '../config/scientific_udder_config.dart';
+import '../models/scientific_udder_models.dart';
 import 'model_update_service.dart';
+import 'scientific_udder/scientific_udder_pipeline.dart';
 import 'milk_mirror_measurement_service.dart';
+import 'milk_production_scale.dart';
 import 'rear_anatomy_detector.dart';
 import 'udder_escutcheon_crop_service.dart';
 import 'sex_classifier_service.dart';
@@ -29,6 +33,7 @@ class PredictionResult {
   final InferenceDiagnostics? diagnostics;
   final MilkMirrorUiMetrics? milkMirror;
   final DairyPipelineReport? pipeline;
+  final ScientificUdderReport? scientificReport;
 
   PredictionResult({
     required this.label,
@@ -40,6 +45,7 @@ class PredictionResult {
     this.diagnostics,
     this.milkMirror,
     this.pipeline,
+    this.scientificReport,
   });
 }
 
@@ -86,6 +92,7 @@ class ClassifierService {
   final YieldFusionService _yieldFusion = YieldFusionService();
   final CropSpeciesGateService _cropSpecies = CropSpeciesGateService();
   final AiPipelineOrchestrator _aiPipeline = AiPipelineOrchestrator();
+  final ScientificUdderPipeline _scientificPipeline = ScientificUdderPipeline();
 
   String? _modelLoadError;
   InferenceDiagnostics? _lastDiagnostics;
@@ -386,10 +393,43 @@ class ClassifierService {
         ),
       );
 
-      final liters = fusion.litersPerDay;
-      final confidence = fusion.confidence;
-      final display = fusion.displayLabel;
+      var liters = fusion.litersPerDay;
+      var confidence = fusion.confidence;
+      var display = fusion.displayLabel;
       predictionSource = fusion.source;
+
+      ScientificUdderReport? scientificReport;
+      if (ScientificUdderConfig.enabled) {
+        InferenceLogger.banner('SCIENTIFIC — trait extraction + regression');
+        scientificReport = await _scientificPipeline.extract(
+          imagePath: imagePath,
+          breed: breed,
+          lactation: lactation,
+          daysInMilk: daysInMilk,
+          feed: feed,
+        );
+        if (scientificReport.scientificallyValid &&
+            scientificReport.predictedLiters != null &&
+            scientificReport.globalConfidence >=
+                ScientificUdderConfig.minConfidenceToBlendLiters) {
+          final sciL = scientificReport.predictedLiters!;
+          liters = liters * ScientificUdderConfig.blendWeightLegacy +
+              sciL * ScientificUdderConfig.blendWeightTraits;
+          liters = MilkProductionScale.clamp(liters);
+          confidence = (confidence * 0.6 +
+                  scientificReport.regressionConfidence! * 0.4)
+              .clamp(0.0, 1.0);
+          if (predictionSource == 'milk_mirror') {
+            predictionSource = 'milk_mirror+scientific_traits';
+          } else {
+            predictionSource = '$predictionSource+scientific_traits';
+          }
+          InferenceLogger.log(
+            'Classifier',
+            'Blended scientific traits liters=${sciL.toStringAsFixed(1)} → $liters',
+          );
+        }
+      }
       final overlayKeypoints =
           mirror.success ? mirror.keypoints : gate.keypoints;
 
@@ -397,6 +437,10 @@ class ClassifierService {
           '${fusion.yieldMin.toStringAsFixed(1)} – ${fusion.yieldMax.toStringAsFixed(1)} L/day';
 
       final tags = <String>[
+        if (scientificReport?.scientificallyValid == true &&
+            scientificReport?.traits != null)
+          'Scientific RUH ${scientificReport!.traits!.ruhCm.toStringAsFixed(1)} cm · '
+          'RUW ${scientificReport.traits!.ruwCm.toStringAsFixed(1)} cm',
         if (escutcheonCrop?.isValid == true) '✅ Escutcheon crop used for AI',
         if (mirror.success) '✅ Measured: escutcheon A–B × C–D',
         if (mirror.success)
@@ -461,6 +505,7 @@ class ClassifierService {
               )
             : null,
         pipeline: pipeline,
+        scientificReport: scientificReport,
       );
     } catch (e, st) {
       InferenceLogger.log('Classifier', 'EXCEPTION: $e');
