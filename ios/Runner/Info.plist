@@ -8,6 +8,10 @@
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
 	<string>Image Detector</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Milk Mirror needs camera access to capture rear-udder photos for milk yield analysis.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Milk Mirror needs photo library access to upload buffalo images for analysis.</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
