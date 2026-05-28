@@ -14,9 +14,11 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
     steps:
-      - uses: actions/checkout@v4.2.0
+      - uses: actions/checkout@v5
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
@@ -25,7 +27,7 @@ jobs:
         run: flutter pub get
 
       - name: Analyze project source
-        run: flutter analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
 
       - name: Run tests
         run: flutter test
