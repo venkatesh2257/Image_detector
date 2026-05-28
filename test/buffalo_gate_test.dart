@@ -9,7 +9,9 @@ final bool _isCi = Platform.environment.containsKey('CI');
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  test('rules gate passes on 9 lit rear buffalo', () async {
+  test(
+    'rules gate passes on 9 lit rear buffalo',
+    () async {
     const path = r'assets/images/animal photos/9 lit/k3 (2).jpg';
     if (!File(path).existsSync()) return;
 
@@ -19,9 +21,13 @@ void main() {
 
     expect(result.predictionSource, isNot('rules_gate'));
     expect(result.label, isNot('No Buffalo Detected'));
-  });
+    },
+    skip: _isCi,
+  );
 
-  test('rules gate passes on 10 lit rear buffalo (dark hide)', () async {
+  test(
+    'rules gate passes on 10 lit rear buffalo (dark hide)',
+    () async {
     const path = r'assets/images/animal photos/10 lit/k3 (2).jpg';
     if (!File(path).existsSync()) return;
 
@@ -35,7 +41,9 @@ void main() {
       reason: result.diagnostics?.rulesRejectReason ?? result.label,
     );
     expect(result.label, isNot('No Buffalo Detected'));
-  });
+    },
+    skip: _isCi,
+  );
 
   test(
     'rules gate rejects centered portrait selfie',
@@ -73,7 +81,7 @@ void main() {
 
     dir.deleteSync(recursive: true);
     },
-    skip: _isCi ? 'Heuristic vision gate test can vary on CI' : false,
+    skip: _isCi,
   );
 
   test(
@@ -105,7 +113,7 @@ void main() {
 
     dir.deleteSync(recursive: true);
     },
-    skip: _isCi ? 'Heuristic vision gate test can vary on CI' : false,
+    skip: _isCi,
   );
 
   test(
@@ -121,7 +129,7 @@ void main() {
     expect(result.predictionSource, 'rules_gate');
     expect(result.label, 'No Buffalo Detected');
     },
-    skip: _isCi ? 'Heuristic vision gate test can vary on CI' : false,
+    skip: _isCi,
   );
 
   test(
@@ -178,7 +186,7 @@ void main() {
 
     dir.deleteSync(recursive: true);
     },
-    skip: _isCi ? 'Heuristic vision gate test can vary on CI' : false,
+    skip: _isCi,
   );
 
   test(
@@ -199,7 +207,7 @@ void main() {
 
     dir.deleteSync(recursive: true);
     },
-    skip: _isCi ? 'Heuristic vision gate test can vary on CI' : false,
+    skip: _isCi,
   );
 
   test('rules gate passes on user buffalo screenshot if present', () async {

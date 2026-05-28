@@ -59,6 +59,6 @@ void main() {
     await tempDir.delete(recursive: true);
     print('\n========== SMOKE TEST DONE ==========\n');
     },
-    skip: _isCi ? 'Smoke test is environment-sensitive on CI runners' : false,
+    skip: _isCi,
   );
 }

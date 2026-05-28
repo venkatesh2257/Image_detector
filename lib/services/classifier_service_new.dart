@@ -112,10 +112,20 @@ class ClassifierService {
 
     await _milkMirror.ensureCalibrationLoaded();
 
-    final modelUpdate = ModelUpdateService();
-    await modelUpdate.checkAndDownload();
-    final modelPath = await modelUpdate.resolveModelPath();
-    final labelsPath = await modelUpdate.resolveLabelsPath();
+    ModelUpdateService? modelUpdate;
+    String? modelPath;
+    String? labelsPath;
+    try {
+      modelUpdate = ModelUpdateService();
+      await modelUpdate.checkAndDownload();
+      modelPath = await modelUpdate.resolveModelPath();
+      labelsPath = await modelUpdate.resolveLabelsPath();
+    } catch (e) {
+      InferenceLogger.log(
+        'Classifier',
+        'Model update unavailable ($e); falling back to bundled assets',
+      );
+    }
 
     final loaded = await _tflite.load(
       modelFilePath: modelPath,
@@ -141,9 +151,9 @@ class ClassifierService {
     return loaded;
   }
 
-  Future<void> _loadTrainingMetadata(ModelUpdateService modelUpdate) async {
+  Future<void> _loadTrainingMetadata(ModelUpdateService? modelUpdate) async {
     try {
-      final remote = await modelUpdate.resolveMetadata();
+      final remote = modelUpdate == null ? null : await modelUpdate.resolveMetadata();
       final Map<String, dynamic> map;
       if (remote != null) {
         map = remote;
