@@ -271,9 +271,12 @@ Camera picker is disabled on Windows desktop; use **Gallery** only.
 
 ```powershell
 flutter test test/buffalo_gate_test.dart
+flutter test test/tflite_pipeline_smoke_test.dart
 ```
 
 Covers: real buffalo pass, human/selfie/laptop reject, synthetic desk laptop, flat gray screen.
+
+`tflite_pipeline_smoke_test.dart` verifies end-to-end model load + classify flow and prints pipeline diagnostics in terminal logs.
 
 ---
 
@@ -289,6 +292,8 @@ Covers: real buffalo pass, human/selfie/laptop reject, synthetic desk laptop, fl
 | **SVG showcase carousel** (empty capture state) | `dairy_ai_showcase_carousel.dart`, `dairy_showcase_svgs.dart` |
 | **Android release ProGuard** for TFLite | `android/app/proguard-rules.pro` |
 | **Gate tests** + user laptop fixture | `test/buffalo_gate_test.dart`, `test/fixtures/` |
+| **TFLite smoke test** (headless synthetic image pipeline check) | `test/tflite_pipeline_smoke_test.dart` |
+| **Deployment isolation branch created** | `deployment` branch (same baseline as `main` before new deploy-only work) |
 
 ---
 
