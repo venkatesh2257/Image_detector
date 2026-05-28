@@ -42,11 +42,11 @@ dependencies:
   flutter_animate: ^4.5.2
   flutter_svg: ^2.0.17
   smooth_page_indicator: ^1.2.1
+  firebase_core_platform_interface: ^6.0.3
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
-  firebase_core_platform_interface: ^6.0.3
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -97,4 +97,4 @@ flutter:
   #         weight: 700
   #
   # For details regarding fonts from package dependencies,
-  # see https://flutter.dev/to/font-from-package
+  # see https://flutter.dev/to/asset-from-package
