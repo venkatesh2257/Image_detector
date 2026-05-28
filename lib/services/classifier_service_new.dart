@@ -8,12 +8,18 @@ import 'package:image/image.dart' as img;
 import 'inference_logger.dart';
 import '../models/dairy_pipeline_report.dart';
 import 'dairy_pipeline_builder.dart';
+import 'ai_pipeline_orchestrator.dart';
+import '../config/scientific_udder_config.dart';
+import '../models/scientific_udder_models.dart';
+import 'model_update_service.dart';
+import 'scientific_udder/scientific_udder_pipeline.dart';
 import 'milk_mirror_measurement_service.dart';
+import 'milk_production_scale.dart';
 import 'rear_anatomy_detector.dart';
+import 'udder_escutcheon_crop_service.dart';
 import 'sex_classifier_service.dart';
 import 'crop_species_gate_service.dart';
 import 'tflite_classifier_service.dart';
-import 'udder_escutcheon_crop_service.dart';
 import 'yield_fusion_service.dart';
 
 class PredictionResult {
@@ -27,6 +33,7 @@ class PredictionResult {
   final InferenceDiagnostics? diagnostics;
   final MilkMirrorUiMetrics? milkMirror;
   final DairyPipelineReport? pipeline;
+  final ScientificUdderReport? scientificReport;
 
   PredictionResult({
     required this.label,
@@ -38,6 +45,7 @@ class PredictionResult {
     this.diagnostics,
     this.milkMirror,
     this.pipeline,
+    this.scientificReport,
   });
 }
 
@@ -83,6 +91,8 @@ class ClassifierService {
   final UdderEscutcheonCropService _cropService = UdderEscutcheonCropService();
   final YieldFusionService _yieldFusion = YieldFusionService();
   final CropSpeciesGateService _cropSpecies = CropSpeciesGateService();
+  final AiPipelineOrchestrator _aiPipeline = AiPipelineOrchestrator();
+  final ScientificUdderPipeline _scientificPipeline = ScientificUdderPipeline();
 
   String? _modelLoadError;
   InferenceDiagnostics? _lastDiagnostics;
@@ -101,9 +111,18 @@ class ClassifierService {
     InferenceLogger.log('Classifier', 'loadModel() called');
 
     await _milkMirror.ensureCalibrationLoaded();
-    final loaded = await _tflite.load();
+
+    final modelUpdate = ModelUpdateService();
+    await modelUpdate.checkAndDownload();
+    final modelPath = await modelUpdate.resolveModelPath();
+    final labelsPath = await modelUpdate.resolveLabelsPath();
+
+    final loaded = await _tflite.load(
+      modelFilePath: modelPath,
+      labelsFilePath: labelsPath,
+    );
     _modelLoadError = loaded ? null : _tflite.loadError;
-    await _loadTrainingMetadata();
+    await _loadTrainingMetadata(modelUpdate);
 
     InferenceLogger.proof('TFLite model loaded', loaded, detail: _modelLoadError);
     InferenceLogger.proof('Interpreter allocated', _tflite.interpreterAllocated);
@@ -122,10 +141,17 @@ class ClassifierService {
     return loaded;
   }
 
-  Future<void> _loadTrainingMetadata() async {
+  Future<void> _loadTrainingMetadata(ModelUpdateService modelUpdate) async {
     try {
-      final raw = await rootBundle.loadString('assets/model/training_metadata.json');
-      final map = jsonDecode(raw) as Map<String, dynamic>;
+      final remote = await modelUpdate.resolveMetadata();
+      final Map<String, dynamic> map;
+      if (remote != null) {
+        map = remote;
+      } else {
+        final raw =
+            await rootBundle.loadString('assets/model/training_metadata.json');
+        map = jsonDecode(raw) as Map<String, dynamic>;
+      }
       _tfliteTrained = map['trained'] == true;
       _tfliteValAccuracy = (map['val_accuracy'] as num?)?.toDouble() ?? 0.0;
       if (_tfliteTrained) {
@@ -164,6 +190,22 @@ class ClassifierService {
         ],
         keypoints: [],
         predictionSource: 'not_loaded',
+      );
+    }
+
+    final preMilk = await _aiPipeline.validatePreMilk(imagePath: imagePath);
+    if (!preMilk.overallPassed) {
+      final stage = preMilk.failedStage?.name ?? 'pipeline';
+      InferenceLogger.endSession('rejected_pipeline_$stage');
+      return PredictionResult(
+        label: 'Photo Not Suitable',
+        confidence: 1.0,
+        hashtags: [
+          'Multi-stage validation failed ($stage)',
+          preMilk.rejectReason ?? 'Retake a clear rear udder photo',
+        ],
+        keypoints: [],
+        predictionSource: 'pipeline_gate',
       );
     }
 
@@ -248,10 +290,33 @@ class ClassifierService {
       }
 
       InferenceLogger.banner('STEP 1b — Escutcheon crop (mandatory)');
-      final escutcheonCrop = _cropService.buildCrop(imagePath);
-      final inferencePath = escutcheonCrop != null && escutcheonCrop.isValid
-          ? escutcheonCrop.cropPath
-          : imagePath;
+      UdderEscutcheonCrop? escutcheonCrop;
+      if (preMilk.cropPath != null) {
+        escutcheonCrop = UdderEscutcheonCrop(
+          sourcePath: imagePath,
+          cropPath: preMilk.cropPath!,
+          box: const EscutcheonCropBox(left: 0, top: 0, width: 1, height: 1),
+          anatomy: RearAnatomyDetector().detectFromPath(imagePath) ??
+              const RearAnatomyLandmarks(
+                pointA: Offset(0.5, 0.2),
+                pointB: Offset(0.5, 0.35),
+                pointC: Offset(0.35, 0.55),
+                pointD: Offset(0.65, 0.55),
+                leftPin: Offset(0.38, 0.4),
+                rightPin: Offset(0.62, 0.4),
+                udder: Offset(0.5, 0.65),
+                confidence: 0.5,
+              ),
+          cropWidth: 224,
+          cropHeight: 224,
+        );
+      } else {
+        escutcheonCrop = _cropService.buildCrop(imagePath);
+      }
+      final inferencePath = preMilk.inferenceImagePath ??
+          (escutcheonCrop != null && escutcheonCrop.isValid
+              ? escutcheonCrop.cropPath
+              : imagePath);
 
       if (escutcheonCrop != null && escutcheonCrop.isValid) {
         final species = _cropSpecies.analyze(
@@ -328,10 +393,43 @@ class ClassifierService {
         ),
       );
 
-      final liters = fusion.litersPerDay;
-      final confidence = fusion.confidence;
-      final display = fusion.displayLabel;
+      var liters = fusion.litersPerDay;
+      var confidence = fusion.confidence;
+      var display = fusion.displayLabel;
       predictionSource = fusion.source;
+
+      ScientificUdderReport? scientificReport;
+      if (ScientificUdderConfig.enabled) {
+        InferenceLogger.banner('SCIENTIFIC — trait extraction + regression');
+        scientificReport = await _scientificPipeline.extract(
+          imagePath: imagePath,
+          breed: breed,
+          lactation: lactation,
+          daysInMilk: daysInMilk,
+          feed: feed,
+        );
+        if (scientificReport.scientificallyValid &&
+            scientificReport.predictedLiters != null &&
+            scientificReport.globalConfidence >=
+                ScientificUdderConfig.minConfidenceToBlendLiters) {
+          final sciL = scientificReport.predictedLiters!;
+          liters = liters * ScientificUdderConfig.blendWeightLegacy +
+              sciL * ScientificUdderConfig.blendWeightTraits;
+          liters = MilkProductionScale.clamp(liters);
+          confidence = (confidence * 0.6 +
+                  scientificReport.regressionConfidence! * 0.4)
+              .clamp(0.0, 1.0);
+          if (predictionSource == 'milk_mirror') {
+            predictionSource = 'milk_mirror+scientific_traits';
+          } else {
+            predictionSource = '$predictionSource+scientific_traits';
+          }
+          InferenceLogger.log(
+            'Classifier',
+            'Blended scientific traits liters=${sciL.toStringAsFixed(1)} → $liters',
+          );
+        }
+      }
       final overlayKeypoints =
           mirror.success ? mirror.keypoints : gate.keypoints;
 
@@ -339,6 +437,10 @@ class ClassifierService {
           '${fusion.yieldMin.toStringAsFixed(1)} – ${fusion.yieldMax.toStringAsFixed(1)} L/day';
 
       final tags = <String>[
+        if (scientificReport?.scientificallyValid == true &&
+            scientificReport?.traits != null)
+          'Scientific RUH ${scientificReport!.traits!.ruhCm.toStringAsFixed(1)} cm · '
+          'RUW ${scientificReport.traits!.ruwCm.toStringAsFixed(1)} cm',
         if (escutcheonCrop?.isValid == true) '✅ Escutcheon crop used for AI',
         if (mirror.success) '✅ Measured: escutcheon A–B × C–D',
         if (mirror.success)
@@ -403,6 +505,7 @@ class ClassifierService {
               )
             : null,
         pipeline: pipeline,
+        scientificReport: scientificReport,
       );
     } catch (e, st) {
       InferenceLogger.log('Classifier', 'EXCEPTION: $e');

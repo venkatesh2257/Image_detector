@@ -30,29 +30,32 @@ class TfliteClassifierService {
   int get lastLoadMs => _loadMs;
   bool get interpreterAllocated => _interpreter != null;
 
-  Future<bool> load() async {
+  Future<bool> load({String? modelFilePath, String? labelsFilePath}) async {
     await close();
     final sw = Stopwatch()..start();
-    InferenceLogger.log('TFLite', 'load() started → asset=$modelAsset');
+    final modelSource = modelFilePath ?? modelAsset;
+    InferenceLogger.log('TFLite', 'load() started → $modelSource');
 
     try {
-      _labels = await _loadLabels();
+      _labels = await _loadLabels(labelsFilePath: labelsFilePath);
       InferenceLogger.proof(
         'labels.txt readable',
         _labels.isNotEmpty,
         detail: '${_labels.length} classes: ${_labels.join(", ")}',
       );
       if (_labels.isEmpty) {
-        _loadError = 'No labels found in $labelsAsset';
+        _loadError = 'No labels found';
         InferenceLogger.log('TFLite', 'ABORT: empty labels');
         return false;
       }
 
-      InferenceLogger.log(
-        'TFLite',
-        'Calling Interpreter.fromAsset($modelAsset)…',
-      );
-      _interpreter = await Interpreter.fromAsset(modelAsset);
+      if (modelFilePath != null) {
+        InferenceLogger.log('TFLite', 'Interpreter.fromFile($modelFilePath)');
+        _interpreter = Interpreter.fromFile(File(modelFilePath));
+      } else {
+        InferenceLogger.log('TFLite', 'Interpreter.fromAsset($modelAsset)');
+        _interpreter = await Interpreter.fromAsset(modelAsset);
+      }
       _inputShape = _interpreter!.getInputTensor(0).shape;
       _outputShape = _interpreter!.getOutputTensor(0).shape;
       final inputType = _interpreter!.getInputTensor(0).type;
@@ -195,8 +198,13 @@ class TfliteClassifierService {
     return MilkProductionScale.formatExact(liters);
   }
 
-  Future<List<String>> _loadLabels() async {
-    final raw = await rootBundle.loadString(labelsAsset);
+  Future<List<String>> _loadLabels({String? labelsFilePath}) async {
+    final String raw;
+    if (labelsFilePath != null) {
+      raw = await File(labelsFilePath).readAsString();
+    } else {
+      raw = await rootBundle.loadString(labelsAsset);
+    }
     return raw
         .split('\n')
         .map((line) => line.trim())

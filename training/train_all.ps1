@@ -1,19 +1,21 @@
-# Full training pipeline: dataset → calibrate Milk Mirror → TFLite
+# Full local + continuous learning pipeline (Windows PowerShell)
 $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 
-$python = "python"
-if (Test-Path "..\venv\Scripts\python.exe") {
-    $python = "..\venv\Scripts\python.exe"
+if (-not $env:GOOGLE_APPLICATION_CREDENTIALS) {
+    Write-Host "Warning: GOOGLE_APPLICATION_CREDENTIALS not set — Firestore export may skip."
 }
 
-Write-Host "=== 1/3 Prepare dataset from assets/images ===" -ForegroundColor Cyan
-& $python prepare_dataset.py
+Write-Host "=== 1) Export Firestore + merge local assets ==="
+python export_firestore_dataset.py
 
-Write-Host "`n=== 2/3 Calibrate Milk Mirror (liters from folder labels) ===" -ForegroundColor Cyan
-& $python calibrate_milk_mirror.py
+Write-Host "=== 2) Build datasets (QA, balance, split) ==="
+python dataset_manager.py
 
-Write-Host "`n=== 3/3 Train TFLite (MobileNetV2) ===" -ForegroundColor Cyan
-& $python train_model.py
+Write-Host "=== 3) Calibrate Milk Mirror ==="
+python calibrate_milk_mirror.py
 
-Write-Host "`nDone. Restart the Flutter app (R) to load new model + calibration." -ForegroundColor Green
+Write-Host "=== 4) Auto retrain (smart deploy) ==="
+python auto_retrain.py --force
+
+Write-Host "Done. Restart Flutter app to load new on-device model."

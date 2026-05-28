@@ -1,0 +1,16 @@
+{
+  "min_new_samples_for_retrain": 300,
+  "max_samples_per_class": 800,
+  "min_images_per_class": 15,
+  "train_ratio": 0.70,
+  "val_ratio": 0.15,
+  "test_ratio": 0.15,
+  "min_val_accuracy_improvement": 0.02,
+  "min_val_accuracy_to_deploy": 0.45,
+  "incremental_learning": true,
+  "hard_example_confidence_threshold": 0.45,
+  "schedule_daily": false,
+  "export_from_firestore": true,
+  "merge_local_assets": true,
+  "local_assets_path": "assets/images/animal photos"
+}
