@@ -897,8 +897,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
         Text(label, style: const TextStyle(color: Color(0xFF6B7280), fontSize: 11)),
         const SizedBox(height: 4),
         DropdownButtonFormField<String>(
-          // Use initialValue if available in latest Flutter, or value if controlled
-          value: value,
+          initialValue: value,
           onChanged: onChanged,
           isExpanded: true,
           style: const TextStyle(color: Color(0xFF111827), fontSize: 13),
@@ -938,6 +937,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildEmptyState() {
     return Container(
       width: double.infinity,
@@ -966,6 +966,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildImagePreview(File imageFile) {
     debugPrint('[UI DEBUG] Rendering refined focus frame');
     return Center(
@@ -1003,63 +1004,6 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                       ),
                     ),
                   ),
-                  // Focus Frame - Set to gone (hidden)
-                  if (false) // Always false to hide the align area square box
-                    Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        // The Lens (Focus Area)
-                        Container(
-                          width: 150,
-                          height: 200,
-                          decoration: BoxDecoration(
-                            color: Colors.black,
-                            borderRadius: BorderRadius.circular(16),
-                            backgroundBlendMode: BlendMode.dstOut,
-                          ),
-                        ),
-                        // The Visual Scanner Frame
-                        Container(
-                          width: 150,
-                          height: 200,
-                          decoration: BoxDecoration(
-                            border: Border.all(
-                              color: const Color(0xFF6D5EF7).withValues(alpha: 0.5),
-                              width: 2,
-                            ),
-                            borderRadius: BorderRadius.circular(16),
-                          ),
-                          child: Stack(
-                            children: [
-                              _buildCorner(Alignment.topLeft),
-                              _buildCorner(Alignment.topRight),
-                              _buildCorner(Alignment.bottomLeft),
-                              _buildCorner(Alignment.bottomRight),
-                              const Center(
-                                child: Column(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Icon(Icons.center_focus_strong, color: Color(0xFF6D5EF7), size: 18),
-                                    SizedBox(height: 8),
-                                    Text(
-                                      'ALIGN REAR',
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        color: Colors.white,
-                                        fontSize: 10,
-                                        fontWeight: FontWeight.w900,
-                                        letterSpacing: 1.2,
-                                        shadows: [Shadow(blurRadius: 4, color: Colors.black)],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
                 ],
               );
             },
@@ -1135,6 +1079,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildCorner(Alignment alignment) {
     return Align(
       alignment: alignment,
@@ -1161,6 +1106,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
+  // ignore: unused_element
   Widget _buildMilkMirrorAnalysisCard(PredictionResult prediction) {
     final m = prediction.milkMirror!;
     final liters = prediction.estimatedLiters;
@@ -1766,7 +1712,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                     const Text(
                       'Visual Analysis Complete',
                       style: TextStyle(
-                        color: const Color(0xFF111827),
+                        color: Color(0xFF111827),
                         fontSize: 18,
                         fontWeight: FontWeight.bold,
                       ),
@@ -1805,7 +1751,7 @@ class _DetectorHomePageState extends State<DetectorHomePage> {
                 if (kDebugMode)
                   _buildModernCalculationRow(
                     'Build score (debug)',
-                    '${((analysis['build_score'] as num?) ?? 0).toStringAsFixed(2)}',
+                    ((analysis['build_score'] as num?) ?? 0).toStringAsFixed(2),
                     Icons.bug_report,
                   ),
               ],

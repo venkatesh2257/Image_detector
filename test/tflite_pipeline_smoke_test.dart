@@ -5,6 +5,8 @@ import 'package:image/image.dart' as img;
 
 import 'package:image_detector/services/classifier_service_new.dart';
 
+// ignore_for_file: avoid_print
+
 /// Headless smoke test — prints full 🔬 / LOG pipeline to the terminal.
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();

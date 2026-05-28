@@ -109,7 +109,7 @@ class AiAnalysisOverlay extends StatelessWidget {
   Widget _pipelineList(List<PipelineStep> steps) {
     return ListView.separated(
       itemCount: steps.length,
-      separatorBuilder: (_, __) => const SizedBox(height: 10),
+      separatorBuilder: (context, _) => const SizedBox(height: 10),
       itemBuilder: (context, i) {
         final step = steps[i];
         final active = i == activeStepIndex;

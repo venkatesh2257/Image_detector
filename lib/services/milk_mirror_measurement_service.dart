@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
@@ -253,7 +252,6 @@ class MilkMirrorMeasurementService {
     final hipY = h * 0.48;
     final hipW = w / 3;
     var best = 0;
-    var bx = cx - hipW / 2;
     for (var y = (hipY - 15).round(); y <= (hipY + 15).round(); y++) {
       for (var x = (cx - hipW).round(); x < cx.round(); x++) {
         if (x < 0 || y < 0 || x >= w || y >= h) continue;
