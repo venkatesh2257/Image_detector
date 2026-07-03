@@ -741,7 +741,8 @@ class DetectorHomePageState extends State<DetectorHomePage> {
                               _buildReviewPanel(context, isWide),
                             ],
                             if (_flowStage == _CaptureFlowStage.results) ...[
-                              if (_prediction != null &&
+                              if (kDebugMode &&
+                                  _prediction != null &&
                                   _prediction!.pipeline != null)
                                 ResultsPreviewStatsRow(
                                   imagePreview: _buildCaptureSection(
@@ -753,7 +754,10 @@ class DetectorHomePageState extends State<DetectorHomePage> {
                                   )!,
                                 )
                               else
-                                _buildCaptureSection(showOverlay: true),
+                                _buildCaptureSection(
+                                  showOverlay: kDebugMode,
+                                  resultsHero: true,
+                                ),
                               SizedBox(height: isWide ? 14 : 12),
                             ],
                     if (_error != null) ...[
@@ -784,7 +788,7 @@ class DetectorHomePageState extends State<DetectorHomePage> {
                         const SizedBox(height: 12),
                         _buildOriginalModelCard(context, _prediction!),
                       ],
-                      if (_prediction!.diagnostics != null) ...[
+                      if (kDebugMode && _prediction!.diagnostics != null) ...[
                         const SizedBox(height: 12),
                         _buildDiagnosticsExpansion(context, _prediction!.diagnostics!),
                       ],
@@ -1078,7 +1082,8 @@ class DetectorHomePageState extends State<DetectorHomePage> {
     required bool showOverlay,
     bool resultsHero = false,
   }) {
-    final overlay = showOverlay &&
+    final overlay = kDebugMode &&
+            showOverlay &&
             _pickedImage != null &&
             _prediction != null &&
             _prediction!.milkMirror != null
@@ -1647,7 +1652,7 @@ class DetectorHomePageState extends State<DetectorHomePage> {
             ),
           ),
           const SizedBox(height: 14),
-          _buildWorkflowSteps(prediction),
+          _buildWorkflowSteps(context, prediction),
           const SizedBox(height: 14),
           Container(
             padding: const EdgeInsets.all(14),
@@ -1671,10 +1676,13 @@ class DetectorHomePageState extends State<DetectorHomePage> {
             ),
           ),
           const SizedBox(height: 10),
-          const Text(
-            '* Pin bones (C/D) and udder (B) on photo — see overlay. '
-            'Production scale 1–30 L/day from escutcheon + on-device AI.',
-            style: TextStyle(color: Color(0xFF6B7280), fontSize: 10, fontStyle: FontStyle.italic),
+          Text(
+            l10n.milkMirrorFootnote,
+            style: const TextStyle(
+              color: Color(0xFF6B7280),
+              fontSize: 10,
+              fontStyle: FontStyle.italic,
+            ),
           ),
         ],
       ),
@@ -1696,10 +1704,11 @@ class DetectorHomePageState extends State<DetectorHomePage> {
     );
   }
 
-  Widget _buildWorkflowSteps(PredictionResult prediction) {
+  Widget _buildWorkflowSteps(BuildContext context, PredictionResult prediction) {
+    final l10n = context.l10n;
     final steps = [
       ('Rules gate', true),
-      ('Pin bones detected', prediction.keypoints.length >= 3),
+      (l10n.proofPinBones, prediction.keypoints.length >= 3),
       ('Escutcheon measured', prediction.milkMirror != null),
       ('TFLite ran', prediction.diagnostics?.tfliteInferenceExecuted ?? false),
     ];
@@ -2200,8 +2209,8 @@ class AnatomicalPainter extends CustomPainter {
   AnatomicalPainter({
     required this.keypoints,
     this.milkMirror,
-    this.leftPinLabel = 'L Pin',
-    this.rightPinLabel = 'R Pin',
+    this.leftPinLabel = 'C',
+    this.rightPinLabel = 'D',
     this.udderLabel = 'Udder',
   });
 

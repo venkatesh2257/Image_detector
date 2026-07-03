@@ -120,7 +120,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get analysisFailed => 'Analysis failed. Please try another photo.';
 
   @override
-  String get engineMilkMirror => 'Pin bones + escutcheon (A–B, C–D)';
+  String get engineMilkMirror => 'Escutcheon geometry (A–B, C–D)';
 
   @override
   String get engineMilkMirrorTflite => 'పాల Predictor + AI';
@@ -175,7 +175,7 @@ class AppLocalizationsEn extends AppLocalizations {
   String get showcaseBuffaloRearTitle => 'Buffalo rear';
 
   @override
-  String get showcaseBuffaloRearSub => 'Pin bone escutcheon';
+  String get showcaseBuffaloRearSub => 'Rear escutcheon';
 
   @override
   String get showcaseCowRearTitle => 'Cow rear';
@@ -365,13 +365,13 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get milkMirrorFootnote =>
-      '* Pin bones (C/D) and udder (B) on photo — see overlay. Production scale 1–30 L/day from escutcheon + on-device AI.';
+      '* Escutcheon landmarks (C/D) and udder (B) on photo — see overlay in debug. Production scale 1–30 L/day from escutcheon + on-device AI.';
 
   @override
   String get proofRulesGate => 'Rules gate';
 
   @override
-  String get proofPinBones => 'Pin bones detected';
+  String get proofPinBones => 'Rear landmarks detected';
 
   @override
   String get proofEscutcheon => 'Escutcheon measured';
@@ -647,10 +647,10 @@ class AppLocalizationsEn extends AppLocalizations {
       'Log DIM and parity in farmer inputs for better stage accuracy.';
 
   @override
-  String get overlayLeftPin => 'L Pin';
+  String get overlayLeftPin => 'C';
 
   @override
-  String get overlayRightPin => 'R Pin';
+  String get overlayRightPin => 'D';
 
   @override
   String get overlayUdder => 'Udder';

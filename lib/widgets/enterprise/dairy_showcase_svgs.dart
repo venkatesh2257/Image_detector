@@ -36,7 +36,7 @@ class DairyShowcaseItem {
   static const List<DairyShowcaseItem> all = [
     DairyShowcaseItem(
       title: 'Buffalo rear',
-      subtitle: 'Pin bone escutcheon',
+      subtitle: 'Rear escutcheon',
       svgAsset: DairyShowcaseAssets.buffaloRear,
     ),
     DairyShowcaseItem(

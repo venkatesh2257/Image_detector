@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
@@ -35,8 +36,10 @@ class EnterpriseAiDashboard extends StatelessWidget {
           const SizedBox(height: 16),
         ],
         _metricsRow(context),
-        const SizedBox(height: 16),
-        _workflowSection(context),
+        if (kDebugMode) ...[
+          const SizedBox(height: 16),
+          _workflowSection(context),
+        ],
         const SizedBox(height: 16),
         _detectionGrid(context),
         const SizedBox(height: 16),

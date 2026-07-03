@@ -120,7 +120,7 @@ class AppLocalizationsHi extends AppLocalizations {
   String get analysisFailed => 'विश्लेषण विफल। कृपया दूसरी फोटो आज़माएँ।';
 
   @override
-  String get engineMilkMirror => 'पिन बोन + एस्कुचeon (A–B, C–D)';
+  String get engineMilkMirror => 'एस्कुचeon ज्यामिति (A–B, C–D)';
 
   @override
   String get engineMilkMirrorTflite => 'పాల Predictor + AI';
@@ -175,7 +175,7 @@ class AppLocalizationsHi extends AppLocalizations {
   String get showcaseBuffaloRearTitle => 'भैंस पिछला दृश्य';
 
   @override
-  String get showcaseBuffaloRearSub => 'पिन बोन एस्कुचeon';
+  String get showcaseBuffaloRearSub => 'पिछला एस्कुचeon';
 
   @override
   String get showcaseCowRearTitle => 'गाय पिछला दृश्य';
@@ -365,13 +365,13 @@ class AppLocalizationsHi extends AppLocalizations {
 
   @override
   String get milkMirrorFootnote =>
-      '* फोटो पर पिन बोन (C/D) और थन (B) — ओवरले देखें। एस्कुचeon + ऑन-डिवाइस AI से 1–30 L/दिन स्केल।';
+      '* फोटो पर एस्कुचeon लैंडमार्क (C/D) और थन (B) — डिबग में ओवरले देखें। एस्कुचeon + ऑन-डिवाइस AI से 1–30 L/दिन स्केल।';
 
   @override
   String get proofRulesGate => 'नियम गेट';
 
   @override
-  String get proofPinBones => 'पिन बोन पहचाने';
+  String get proofPinBones => 'पिछले लैंडमार्क पहचाने';
 
   @override
   String get proofEscutcheon => 'एस्कुचeon मापा';
@@ -644,10 +644,10 @@ class AppLocalizationsHi extends AppLocalizations {
   String get tipComplete => 'बेहतर सटीकता के लिए DIM और parity लॉग करें।';
 
   @override
-  String get overlayLeftPin => 'बाएँ पिन';
+  String get overlayLeftPin => 'C';
 
   @override
-  String get overlayRightPin => 'दाएँ पिन';
+  String get overlayRightPin => 'D';
 
   @override
   String get overlayUdder => 'थन';

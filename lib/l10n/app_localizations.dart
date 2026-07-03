@@ -307,7 +307,7 @@ abstract class AppLocalizations {
   /// No description provided for @engineMilkMirror.
   ///
   /// In en, this message translates to:
-  /// **'Pin bones + escutcheon (A–B, C–D)'**
+  /// **'Escutcheon geometry (A–B, C–D)'**
   String get engineMilkMirror;
 
   /// No description provided for @engineMilkMirrorTflite.
@@ -415,7 +415,7 @@ abstract class AppLocalizations {
   /// No description provided for @showcaseBuffaloRearSub.
   ///
   /// In en, this message translates to:
-  /// **'Pin bone escutcheon'**
+  /// **'Rear escutcheon'**
   String get showcaseBuffaloRearSub;
 
   /// No description provided for @showcaseCowRearTitle.
@@ -757,7 +757,7 @@ abstract class AppLocalizations {
   /// No description provided for @milkMirrorFootnote.
   ///
   /// In en, this message translates to:
-  /// **'* Pin bones (C/D) and udder (B) on photo — see overlay. Production scale 1–30 L/day from escutcheon + on-device AI.'**
+  /// **'* Escutcheon landmarks (C/D) and udder (B) on photo — see overlay in debug. Production scale 1–30 L/day from escutcheon + on-device AI.'**
   String get milkMirrorFootnote;
 
   /// No description provided for @proofRulesGate.
@@ -769,7 +769,7 @@ abstract class AppLocalizations {
   /// No description provided for @proofPinBones.
   ///
   /// In en, this message translates to:
-  /// **'Pin bones detected'**
+  /// **'Rear landmarks detected'**
   String get proofPinBones;
 
   /// No description provided for @proofEscutcheon.
@@ -1285,13 +1285,13 @@ abstract class AppLocalizations {
   /// No description provided for @overlayLeftPin.
   ///
   /// In en, this message translates to:
-  /// **'L Pin'**
+  /// **'C'**
   String get overlayLeftPin;
 
   /// No description provided for @overlayRightPin.
   ///
   /// In en, this message translates to:
-  /// **'R Pin'**
+  /// **'D'**
   String get overlayRightPin;
 
   /// No description provided for @overlayUdder.

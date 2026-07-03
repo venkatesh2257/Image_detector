@@ -3,14 +3,20 @@ import 'package:flutter/material.dart';
 import '../services/milk_mirror_measurement_service.dart';
 import 'anatomy_escutcheon_debug.dart';
 
-/// Draws rear-view diamond landmarks (tail head, pins, udder center).
+/// Draws rear-view diamond landmarks (tail head, escutcheon sides, udder center).
 class AnatomyOverlayPainter extends CustomPainter {
   final MilkMirrorUiMetrics? metrics;
   final List<Offset> fallbackKeypoints;
+  final String leftLandmarkLabel;
+  final String rightLandmarkLabel;
+  final String udderLabel;
 
   AnatomyOverlayPainter({
     this.metrics,
     this.fallbackKeypoints = const [],
+    this.leftLandmarkLabel = 'C',
+    this.rightLandmarkLabel = 'D',
+    this.udderLabel = 'Udder',
   });
 
   Offset _pt(Offset n, Size size) => Offset(n.dx * size.width, n.dy * size.height);
@@ -53,9 +59,9 @@ class AnatomyOverlayPainter extends CustomPainter {
     canvas.drawPath(diamond, linePaint);
 
     _drawMarker(canvas, tailHead, 'Tail', const Color(0xFFFFD54F));
-    _drawMarker(canvas, leftPin, 'L Pin', Colors.redAccent);
-    _drawMarker(canvas, rightPin, 'R Pin', Colors.redAccent);
-    _drawMarker(canvas, udder, 'Udder', Colors.blueAccent);
+    _drawMarker(canvas, leftPin, leftLandmarkLabel, Colors.redAccent);
+    _drawMarker(canvas, rightPin, rightLandmarkLabel, Colors.redAccent);
+    _drawMarker(canvas, udder, udderLabel, Colors.blueAccent);
 
     final pelvicW = (kps[1].dx - kps[0].dx).abs();
     final udderH = (kps[2].dy - (kps.length > 3 ? kps[3].dy : kps[0].dy - 0.08)).abs();
@@ -100,5 +106,9 @@ class AnatomyOverlayPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant AnatomyOverlayPainter old) =>
-      old.metrics != metrics || old.fallbackKeypoints != fallbackKeypoints;
+      old.metrics != metrics ||
+      old.fallbackKeypoints != fallbackKeypoints ||
+      old.leftLandmarkLabel != leftLandmarkLabel ||
+      old.rightLandmarkLabel != rightLandmarkLabel ||
+      old.udderLabel != udderLabel;
 }

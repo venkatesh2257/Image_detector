@@ -86,7 +86,7 @@ class MilkMirrorMeasurementService {
         if (l == null || r == null || u == null) {
           InferenceLogger.log('MILK_MIRROR', 'Missing landmarks L=$l R=$r U=$u');
           return MilkMirrorResult.failed(
-            'Could not find pin bones / udder — use rear udder photo (3–5 ft, full udder)',
+            'Could not find rear landmarks / udder — use rear udder photo (3–5 ft, full udder)',
           );
         }
         leftPin = l;

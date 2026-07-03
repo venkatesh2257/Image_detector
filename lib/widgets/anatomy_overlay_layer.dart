@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image/image.dart' as img;
 
+import '../l10n/app_localizations.dart';
 import '../services/milk_mirror_measurement_service.dart';
 import 'anatomy_overlay_painter.dart';
 
@@ -27,6 +28,7 @@ class AnatomyOverlayLayer extends StatelessWidget {
           future: _decodeSize(imageFile),
           builder: (context, snap) {
             if (!snap.hasData) return const SizedBox.shrink();
+            final l10n = AppLocalizations.of(context);
             final fit = _containFit(snap.data!, constraints.biggest);
             return Stack(
               fit: StackFit.expand,
@@ -40,6 +42,9 @@ class AnatomyOverlayLayer extends StatelessWidget {
                     painter: AnatomyOverlayPainter(
                       metrics: metrics,
                       fallbackKeypoints: fallbackKeypoints,
+                      leftLandmarkLabel: l10n.overlayLeftPin,
+                      rightLandmarkLabel: l10n.overlayRightPin,
+                      udderLabel: l10n.overlayUdder,
                     ),
                   ),
                 ),

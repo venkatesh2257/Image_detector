@@ -123,7 +123,7 @@ class AppLocalizationsTe extends AppLocalizations {
       'విశ్లేషణ విఫలమైంది. దయచేసి మరో ఫోటో ప్రయత్నించండి.';
 
   @override
-  String get engineMilkMirror => 'పిన్ బోన్ + ఎస్కుచeon (A–B, C–D)';
+  String get engineMilkMirror => 'ఎస్కుచeon జ్యామితి (A–B, C–D)';
 
   @override
   String get engineMilkMirrorTflite => 'పాల Predictor + AI';
@@ -178,7 +178,7 @@ class AppLocalizationsTe extends AppLocalizations {
   String get showcaseBuffaloRearTitle => 'గేదె వెనుక';
 
   @override
-  String get showcaseBuffaloRearSub => 'పిన్ బోన్ ఎస్కుచeon';
+  String get showcaseBuffaloRearSub => 'వెనుక ఎస్కుచeon';
 
   @override
   String get showcaseCowRearTitle => 'ఆవు వెనుక';
@@ -368,13 +368,13 @@ class AppLocalizationsTe extends AppLocalizations {
 
   @override
   String get milkMirrorFootnote =>
-      '* ఫోటోలో పిన్ బోన్లు (C/D) మరియు క్షీర గ్రంథి (B) — ఓవర్లే చూడండి. ఎస్కుచeon + పరికర AI నుండి 1–30 L/రోజు స్కేల్.';
+      '* ఫోటోలో ఎస్కుచeon ల్యాండ్‌మార్క్‌లు (C/D) మరియు క్షీర గ్రంథి (B) — డీబగ్‌లో ఓవర్లే చూడండి. ఎస్కుచeon + పరికర AI నుండి 1–30 L/రోజు స్కేల్.';
 
   @override
   String get proofRulesGate => 'నియమాల గేట్';
 
   @override
-  String get proofPinBones => 'పిన్ బోన్లు గుర్తించబడ్డాయి';
+  String get proofPinBones => 'వెనుక ల్యాండ్‌మార్క్‌లు గుర్తించబడ్డాయి';
 
   @override
   String get proofEscutcheon => 'ఎస్కుచeon కొలవబడింది';
@@ -648,10 +648,10 @@ class AppLocalizationsTe extends AppLocalizations {
       'మెరుగైన ఖచ్చితత్వం కోసం DIM మరియు parity లాగ్ చేయండి.';
 
   @override
-  String get overlayLeftPin => 'ఎడమ పిన్';
+  String get overlayLeftPin => 'C';
 
   @override
-  String get overlayRightPin => 'కుడి పిన్';
+  String get overlayRightPin => 'D';
 
   @override
   String get overlayUdder => 'క్షీర గ్రంథి';
